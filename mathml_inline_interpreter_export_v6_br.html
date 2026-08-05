@@ -1,0 +1,1726 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MathML Inline-Interpreter und Mobiltest-Export</title>
+
+  <!--
+    MathJax 4 – globale Konfiguration.
+    displayOverflow:'linebreak' behandelt breite Display-Formeln.
+    linebreaks.inline:true lässt kurze Inline-Formeln im Fließtext stehen
+    und erlaubt nur bei tatsächlichem Platzmangel mathematische Umbrüche.
+  -->
+  <script>
+    window.MathJax = {
+      startup: { typeset: false },
+      output: {
+        displayOverflow: 'linebreak',
+        linebreaks: {
+          inline: true,
+          width: '100%',
+          lineleading: 0.2
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* Grundlayout und gemeinsame Formularelemente der Werkzeugoberfläche. */
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+      background: #f4f6f8;
+      color: #17202a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+    }
+
+    button, input, textarea, select {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid #b9c4cf;
+      border-radius: 0.55rem;
+      background: #fff;
+      color: #17202a;
+      padding: 0.62rem 0.85rem;
+      cursor: pointer;
+    }
+
+    button:hover { background: #f5f8fb; }
+    button:disabled { cursor: wait; opacity: 0.6; }
+
+    .app-shell {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 1rem;
+    }
+
+    h1, h2 {
+      line-height: 1.2;
+      margin-top: 0;
+    }
+
+    h1 { font-size: clamp(1.45rem, 2.4vw, 2rem); }
+    h2 { font-size: 1.1rem; }
+
+    .intro {
+      max-width: 80ch;
+      margin-bottom: 1rem;
+    }
+
+    /* Zweispaltiger Arbeitsbereich: Eingabe/Export links, Vorschau rechts. */
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      gap: 1rem;
+      align-items: start;
+    }
+
+    .panel {
+      background: #fff;
+      border: 1px solid #d8e0e7;
+      border-radius: 0.8rem;
+      padding: 1rem;
+      box-shadow: 0 0.2rem 0.8rem rgba(21, 34, 50, 0.05);
+      min-width: 0;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: center;
+      margin: 0.75rem 0;
+    }
+
+    .toolbar .spacer { flex: 1; }
+
+    label {
+      display: block;
+      font-weight: 650;
+      margin-bottom: 0.35rem;
+    }
+
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 420px;
+      resize: vertical;
+      border: 1px solid #b9c4cf;
+      border-radius: 0.6rem;
+      padding: 0.8rem;
+      font: 0.9rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      tab-size: 2;
+    }
+
+    .preview-controls {
+      display: grid;
+      grid-template-columns: minmax(170px, 1fr) auto;
+      gap: 0.65rem;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .range-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.65rem;
+      align-items: center;
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+
+    output {
+      min-width: 5rem;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 650;
+    }
+
+    /*
+      Die Bühne simuliert einen verfügbaren Bildschirmbereich. Der darin
+      liegende Viewport erhält über den Schieberegler eine feste Testbreite.
+    */
+    .preview-stage {
+      width: 100%;
+      min-height: 320px;
+      overflow: auto;
+      padding: 0.6rem;
+      border: 1px dashed #b9c7d4;
+      border-radius: 0.7rem;
+      background:
+        linear-gradient(45deg, #f7f9fb 25%, transparent 25%),
+        linear-gradient(-45deg, #f7f9fb 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #f7f9fb 75%),
+        linear-gradient(-45deg, transparent 75%, #f7f9fb 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    }
+
+    .preview-viewport {
+      width: 760px;
+      max-width: none;
+      min-height: 280px;
+      margin: 0 auto;
+      padding: 1rem;
+      background: #fff;
+      border: 1px solid #d8e0e7;
+      border-radius: 0.45rem;
+      overflow-wrap: anywhere;
+    }
+
+    /*
+      Unterstützt sowohl den neuen Minimalfall (normaler HTML-Fließtext mit
+      direkt eingestreutem <math>) als auch ältere, bereits segmentierte
+      Snippets mit .mjx-mixed-line/.mjx-*-segment.
+    */
+    .rendered-content .mjx-mixed-line {
+      display: inline;
+    }
+
+    .rendered-content .mjx-text-segment,
+    .rendered-content .mjx-formula-segment,
+    .rendered-content .mjx-text-run {
+      display: inline;
+    }
+
+    .rendered-content p {
+      margin: 0 0 1em;
+    }
+
+    .rendered-content math[display="inline"],
+    .rendered-content mjx-container:not([display="true"]) {
+      display: inline;
+    }
+
+    .rendered-content mjx-container {
+      max-width: 100%;
+    }
+
+    .rendered-content mjx-container[display="true"] {
+      margin: 0.65em 0;
+    }
+
+    /* Rückmeldungen für asynchrone Lade-, Render- und Exportvorgänge. */
+    .status {
+      min-height: 1.5em;
+      margin: 0.5rem 0 0;
+      color: #44515e;
+    }
+
+    .status.error { color: #a01818; }
+    .status.success { color: #17663a; }
+
+    details {
+      margin-top: 1rem;
+      border-top: 1px solid #e1e7ec;
+      padding-top: 0.8rem;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+      gap: 0.8rem;
+      align-items: stretch;
+      margin-top: 0.65rem;
+    }
+
+    .result-pane {
+      min-width: 0;
+    }
+
+    .result-pane h3 {
+      margin: 0 0 0.45rem;
+      font-size: 0.95rem;
+    }
+
+    .result-pane pre {
+      height: calc(100% - 1.85rem);
+      margin: 0;
+    }
+
+    .change-summary {
+      min-height: 12rem;
+      padding: 0.8rem;
+      border: 1px solid #d8e0e7;
+      border-radius: 0.55rem;
+      background: #f7f9fb;
+      color: #33404d;
+    }
+
+    .change-summary ul {
+      margin: 0;
+      padding-left: 1.15rem;
+    }
+
+    .change-summary li + li {
+      margin-top: 0.45rem;
+    }
+
+    pre {
+      max-height: 360px;
+      overflow: auto;
+      padding: 0.8rem;
+      border-radius: 0.55rem;
+      background: #17202a;
+      color: #f4f7fa;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 0.84rem;
+    }
+
+    .export-box {
+      margin-top: 1rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid #e1e7ec;
+    }
+
+    .field-note {
+      margin: 0.3rem 0 0;
+      color: #5b6875;
+      font-size: 0.9rem;
+    }
+
+    .module-file {
+      margin-top: 0.75rem;
+    }
+
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
+      .result-grid { grid-template-columns: 1fr; }
+      textarea { min-height: 310px; }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="app-shell">
+    <h1>MathML-Interpreter für gemischten Fließtext</h1>
+    <p class="intro">
+      Das Eingabefeld akzeptiert normalen Text, HTML und MathML, in dem
+      Erläuterungen noch als <code>&lt;mtext&gt;</code> oder
+      <code>&lt;text&gt;</code> enthalten sind. Beim Aktualisieren werden diese
+      Erläuterungen in normalen HTML-Fließtext überführt; nur die Formelsegmente
+      bleiben MathML und werden von MathJax gerendert. Ein
+      <code>&lt;br&gt;</code> im HTML-Text bleibt erhalten und erzeugt in
+      Vorschau, abgedocktem Fenster und Export einen festen Zeilenumbruch.
+    </p>
+
+    <!-- Hauptarbeitsbereich mit Quelle, Aktionen und responsiver Vorschau. -->
+    <section class="workspace">
+      <div class="panel">
+        <h2>Eingabe</h2>
+        <label for="sourceInput">HTML, Text und MathML</label>
+        <textarea id="sourceInput" spellcheck="false">&lt;p&gt;
+  Es gilt:&lt;br&gt;
+  Ist der Graph
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;msub&gt;&lt;mi&gt;G&lt;/mi&gt;&lt;mi&gt;f&lt;/mi&gt;&lt;/msub&gt;
+  &lt;/math&gt;
+  der Funktion
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mi&gt;f&lt;/mi&gt;
+  &lt;/math&gt;
+  achsensymmetrisch zur
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mi&gt;y&lt;/mi&gt;
+  &lt;/math&gt;-Achse,&lt;br&gt;dann sind für alle
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mrow&gt;
+      &lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;∈&lt;/mo&gt;&lt;msub&gt;&lt;mi&gt;D&lt;/mi&gt;&lt;mi&gt;f&lt;/mi&gt;&lt;/msub&gt;
+    &lt;/mrow&gt;
+  &lt;/math&gt;
+  die Funktionswerte
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mrow&gt;
+      &lt;mi&gt;f&lt;/mi&gt;&lt;mo&gt;(&lt;/mo&gt;&lt;mo&gt;−&lt;/mo&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;)&lt;/mo&gt;
+      &lt;mo&gt;=&lt;/mo&gt;
+      &lt;mi&gt;f&lt;/mi&gt;&lt;mo&gt;(&lt;/mo&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;)&lt;/mo&gt;
+    &lt;/mrow&gt;
+  &lt;/math&gt;.
+&lt;/p&gt;</textarea>
+
+        <div class="toolbar">
+          <button id="renderButton" type="button">Vorschau aktualisieren</button>
+          <button id="resetButton" type="button">Testfall zurücksetzen</button>
+          <button id="copyButton" type="button">Sanitized Code kopieren</button>
+        </div>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+
+        <!-- Kanonische Ausgabe, die auch für Vorschau und Export verwendet wird. -->
+        <details open>
+          <summary>Sanitized Code</summary>
+          <div class="result-grid">
+            <section class="result-pane" aria-labelledby="codeResultTitle">
+              <h3 id="codeResultTitle">Gereinigter Code</h3>
+              <pre><code id="minimalCode">&lt;p&gt;
+  Es gilt:&lt;br&gt;
+  Ist der Graph
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;msub&gt;&lt;mi&gt;G&lt;/mi&gt;&lt;mi&gt;f&lt;/mi&gt;&lt;/msub&gt;
+  &lt;/math&gt;
+  der Funktion
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mi&gt;f&lt;/mi&gt;
+  &lt;/math&gt;
+  achsensymmetrisch zur
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mi&gt;y&lt;/mi&gt;
+  &lt;/math&gt;-Achse,&lt;br&gt;dann sind für alle
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mrow&gt;
+      &lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;∈&lt;/mo&gt;&lt;msub&gt;&lt;mi&gt;D&lt;/mi&gt;&lt;mi&gt;f&lt;/mi&gt;&lt;/msub&gt;
+    &lt;/mrow&gt;
+  &lt;/math&gt;
+  die Funktionswerte
+  &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
+    &lt;mrow&gt;
+      &lt;mi&gt;f&lt;/mi&gt;&lt;mo&gt;(&lt;/mo&gt;&lt;mo&gt;−&lt;/mo&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;)&lt;/mo&gt;
+      &lt;mo&gt;=&lt;/mo&gt;
+      &lt;mi&gt;f&lt;/mi&gt;&lt;mo&gt;(&lt;/mo&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;)&lt;/mo&gt;
+    &lt;/mrow&gt;
+  &lt;/math&gt;.
+&lt;/p&gt;</code></pre>
+            </section>
+            <aside class="result-pane" aria-labelledby="changeSummaryTitle">
+              <h3 id="changeSummaryTitle">Änderungen am Ursprungscode</h3>
+              <div id="changeSummary" class="change-summary" aria-live="polite">
+                Die Zusammenfassung erscheint nach dem ersten Vorschaulauf.
+              </div>
+            </aside>
+          </div>
+        </details>
+
+        <!-- Erzeugt eine eigenständige Testseite inklusive MathJax-Laufzeit. -->
+        <div class="export-box">
+          <h2>Mobile Testseite exportieren</h2>
+          <p>
+            Der Export lädt das kombinierte MathJax-Modul
+            <code>mml-chtml.js</code>, bettet es direkt in die erzeugte
+            HTML-Datei ein und erzeugt damit eine einzelne Testdatei.
+          </p>
+          <button id="downloadButton" type="button">
+            Eigenständige HTML-Testseite herunterladen
+          </button>
+
+          <div class="module-file">
+            <label for="mathJaxFile">
+              Optional: lokales <code>mml-chtml.js</code> für den Export wählen
+            </label>
+            <input id="mathJaxFile" type="file" accept=".js,text/javascript,application/javascript">
+            <p class="field-note">
+              Dies ermöglicht den Export auch ohne Netzverbindung. Die gewählte
+              Datei wird nur lokal im Browser gelesen.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Responsive Vorschau</h2>
+
+        <!-- Simuliert verschiedene Gerätebreiten ohne Änderung des Browserfensters. -->
+        <div class="preview-controls">
+          <div class="range-line">
+            <input id="widthSlider" type="range" min="280" max="1200" step="10" value="760"
+                   aria-label="Vorschaubreite">
+            <output id="widthOutput" for="widthSlider">760 px</output>
+          </div>
+          <button id="detachButton" type="button">Vorschau abdocken</button>
+        </div>
+
+        <div class="preview-stage">
+          <article id="previewViewport" class="preview-viewport rendered-content"></article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+      const MATHJAX_CDN =
+        'https://cdn.jsdelivr.net/npm/mathjax@4.1.3/mml-chtml.js';
+
+      /*
+        Häufig verwendete DOM-Referenzen werden einmal aufgelöst. So bleiben
+        Rendering- und Ereignisfunktionen frei von wiederholten DOM-Suchen.
+      */
+      const DEFAULT_SNIPPET = document.getElementById('sourceInput').value;
+      const sourceInput = document.getElementById('sourceInput');
+      const previewViewport = document.getElementById('previewViewport');
+      const minimalCode = document.getElementById('minimalCode');
+      const changeSummary = document.getElementById('changeSummary');
+      const widthSlider = document.getElementById('widthSlider');
+      const widthOutput = document.getElementById('widthOutput');
+      const status = document.getElementById('status');
+      const renderButton = document.getElementById('renderButton');
+      const downloadButton = document.getElementById('downloadButton');
+      const mathJaxFile = document.getElementById('mathJaxFile');
+
+      /* Laufzeitstatus für Popup, MathJax-Quelle und verzögertes Rendering. */
+      let previewWindow = null;
+      let loadedMathJaxUrl = null;
+      let chosenMathJaxSource = '';
+      let fetchedMathJaxSource = '';
+      let renderTimer = 0;
+
+      /*
+        <br> ist ausdrücklich Teil der Allowlist. Es wird nicht in Text
+        umgewandelt, sondern bleibt als semantischer HTML-Zeilenumbruch in
+        Sanitized Code, Vorschau, Popup und Export erhalten.
+      */
+      /* Erlaubte Strukturelemente außerhalb von MathML. */
+      const SAFE_HTML = new Set([
+        'p', 'span', 'div', 'strong', 'b', 'em', 'i', 'br',
+        'ul', 'ol', 'li', 'blockquote', 'code', 'pre',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6'
+      ]);
+
+      /* MathML-Elemente, deren Semantik beim Import erhalten bleiben darf. */
+      const SAFE_MATHML = new Set([
+        'math', 'mrow', 'mi', 'mn', 'mo', 'mtext', 'ms', 'mspace',
+        'msub', 'msup', 'msubsup', 'mfrac', 'msqrt', 'mroot',
+        'munder', 'mover', 'munderover', 'mmultiscripts',
+        'mprescripts', 'none', 'mtable', 'mtr', 'mlabeledtr', 'mtd',
+        'mstyle', 'mpadded', 'mphantom', 'menclose', 'mfenced',
+        'semantics', 'annotation', 'annotation-xml'
+      ]);
+
+      /* Unkritische Attribute, die sowohl HTML als auch MathML nutzen dürfen. */
+      const SAFE_GLOBAL_ATTRIBUTES = new Set([
+        'class', 'id', 'lang', 'dir', 'title',
+        'aria-label', 'aria-hidden', 'role'
+      ]);
+
+      /* Darstellungs- und Strukturattribute, die ausschließlich MathML benötigt. */
+      const SAFE_MATH_ATTRIBUTES = new Set([
+        'xmlns', 'display', 'overflow', 'encoding', 'mathvariant', 'displaystyle',
+        'scriptlevel', 'mathsize', 'mathcolor', 'mathbackground',
+        'stretchy', 'symmetric', 'fence', 'separator', 'form',
+        'accent', 'accentunder', 'movablelimits', 'largeop',
+        'lspace', 'rspace', 'minsize', 'maxsize',
+        'width', 'height', 'depth', 'linethickness', 'bevelled',
+        'notation', 'rowalign', 'columnalign', 'rowspacing',
+        'columnspacing', 'rowlines', 'columnlines', 'frame',
+        'framespacing', 'equalrows', 'equalcolumns',
+        'side', 'minlabelspacing', 'data-break-align',
+        'data-vertical-align', 'linebreak'
+      ]);
+
+      /* Aktualisiert die barrierefrei angekündigte Statusmeldung der Oberfläche. */
+      function setStatus(message, type = '') {
+        status.textContent = message;
+        status.className = `status ${type}`.trim();
+      }
+
+      /* Maskiert reinen Text über den Browser-DOM statt über eine eigene Entitätenliste. */
+      function escapePlainText(value) {
+        const holder = document.createElement('div');
+        holder.textContent = value;
+        return holder.innerHTML;
+      }
+
+      /* Erstellt die Zähler für genau einen Import- und Bereinigungsdurchlauf. */
+      function createSanitizationAudit() {
+        return {
+          plainTextParagraphs: 0,
+          removedActiveElements: 0,
+          repairedTextElements: 0,
+          removedElements: 0,
+          unwrappedElements: 0,
+          removedAttributes: 0,
+          addedMathNamespaces: 0,
+          normalizedMathDisplays: 0,
+          addedMathOverflows: 0,
+          convertedMixedMath: 0,
+          preservedBreaks: 0
+        };
+      }
+
+      /* Audit-Zähler sind optional, damit die Sanitizer-Funktionen wiederverwendbar bleiben. */
+      function recordAudit(audit, property, amount = 1) {
+        if (audit) audit[property] += amount;
+      }
+
+      /*
+        Reiner Text wird in Absätze umgewandelt. Enthält die Eingabe Markup,
+        wird sie als HTML/MathML geparst und anschließend per Allowlist
+        strukturell bereinigt.
+      */
+      function sourceToDocumentFragment(source, audit = null) {
+        const hasMarkup = /<\/?[a-z][\s\S]*>/i.test(source);
+
+        if (!hasMarkup) {
+          const blocks = source
+            .split(/\n\s*\n/)
+            .map(block => block.trim())
+            .filter(Boolean);
+          const paragraphs = blocks
+            .map(block => `<p>${escapePlainText(block).replace(/\n/g, '<br>')}</p>`)
+            .join('');
+          recordAudit(audit, 'plainTextParagraphs', blocks.length || 1);
+          return parseAndSanitize(paragraphs || '<p></p>', audit);
+        }
+
+        return parseAndSanitize(source, audit);
+      }
+
+      /*
+        Strukturelle Sanitation:
+        - entfernt aktive Inhalte und Eventhandler,
+        - erlaubt nur einen begrenzten Satz HTML-/MathML-Elemente,
+        - repariert das häufige ungültige <text>-Element innerhalb von MathML,
+        - ergänzt fehlende MathML-Namespace- und display-Angaben.
+
+        Dies ist eine defensive Referenzroutine, ersetzt in einem CMS aber
+        nicht die zentrale serverseitige HTML-Whitelist.
+      */
+      /*
+        Wandelt MathML-Leerraum in normalen HTML-Leerraum um. Der HTML-Parser
+        decodiert &#xA0; und &nbsp; bereits zu U+00A0; hier wird daraus ein
+        normales Leerzeichen, das im Fließtext regulär umbrechen darf.
+      */
+      function normalizeFlowText(value) {
+        return value
+          .replace(/\u00A0/g, ' ')
+          .replace(/[ \t\r\n\f]+/g, ' ');
+      }
+
+      /* Prüft Elementtyp und lokalen Namen unabhängig von Namespace-Präfixen. */
+      function isMathElement(node, localName) {
+        return node?.nodeType === Node.ELEMENT_NODE &&
+          node.localName?.toLowerCase() === localName;
+      }
+
+      /*
+        Nur mtext/text auf der obersten Flussebene werden als Erläuterungstext
+        ausgelagert. Ein mtext innerhalb eines Bruchs, Indexes oder einer
+        Tabelle bleibt unangetastet, weil eine pauschale Zerlegung dort die
+        mathematische Struktur zerstören würde.
+
+        Unterstützt werden:
+        1. mtext als direktes Kind von <math>
+        2. mtext als direktes Kind eines einzigen äußeren <mrow>
+      */
+      function findMixedMathFlowRoot(math) {
+        const directElements = Array.from(math.children);
+
+        if (directElements.some(node => isMathElement(node, 'mtext'))) {
+          return math;
+        }
+
+        if (directElements.length === 1 &&
+            isMathElement(directElements[0], 'mrow') &&
+            Array.from(directElements[0].children)
+              .some(node => isMathElement(node, 'mtext'))) {
+          return directElements[0];
+        }
+
+        return null;
+      }
+
+      function isSpacingOnlyMathToken(node) {
+        if (node?.nodeType !== Node.ELEMENT_NODE) return false;
+
+        const name = node.localName?.toLowerCase();
+        if (!['mi', 'mn', 'mo', 'mtext'].includes(name)) return false;
+
+        return normalizeFlowText(node.textContent || '').trim() === '';
+      }
+
+      /*
+        Entfernt reine Abstands-mtext aus dem verbleibenden Formelbaum.
+        Beispiel: <msub><mi>G</mi><mrow><mi>f</mi><mtext>&nbsp;</mtext></mrow>
+        Solcher Leerraum ist keine Formelinformation und soll nicht von
+        MathJax als mathematischer Text gesetzt werden.
+      */
+      function removeFormulaOnlySpacing(math) {
+        math.querySelectorAll('mtext').forEach(node => {
+          if (normalizeFlowText(node.textContent || '').trim() === '') {
+            node.remove();
+          }
+        });
+
+        math.querySelectorAll('mi, mn, mo').forEach(node => {
+          if (normalizeFlowText(node.textContent || '').trim() === '') {
+            node.remove();
+          }
+        });
+      }
+
+      /* Baut aus einem Formelsegment ein eigenständiges Inline-MathML-Element. */
+      function createInlineMathFromNodes(originalMath, nodes, doc) {
+        const math = doc.createElementNS(MATHML_NS, 'math');
+
+        for (const attr of Array.from(originalMath.attributes)) {
+          if (attr.name === 'display' || attr.name === 'overflow') continue;
+          math.setAttribute(attr.name, attr.value);
+        }
+
+        math.setAttribute('xmlns', MATHML_NS);
+        math.setAttribute('display', 'inline');
+        math.setAttribute('overflow', 'linebreak');
+
+        nodes.forEach(node => math.appendChild(node.cloneNode(true)));
+        removeFormulaOnlySpacing(math);
+
+        return math;
+      }
+
+      /*
+        Kernroutine: Ein gemischtes <math> wird an seinen top-level-mtext-
+        Elementen in HTML-Text und MathML-Formelsegmente aufgeteilt.
+
+        Vorher:
+          <math><mtext>Text</mtext><mi>x</mi><mtext>Text</mtext></math>
+
+        Nachher:
+          Text <math display="inline"><mi>x</mi></math> Text
+
+        Dadurch behandelt der Browser die Erläuterungen als normalen Fließtext.
+        Nur die mathematischen Segmente gelangen zu MathJax.
+      */
+      function convertMixedMathToHtmlFlow(math, doc) {
+        const flowRoot = findMixedMathFlowRoot(math);
+        if (!flowRoot) return false;
+
+        const sourceNodes = Array.from(flowRoot.childNodes);
+        const replacement = doc.createDocumentFragment();
+        let formulaBucket = [];
+
+        function flushFormula() {
+          if (!formulaBucket.length) return;
+
+          const formula = createInlineMathFromNodes(
+            math,
+            formulaBucket,
+            doc
+          );
+
+          if (formula.childNodes.length) {
+            replacement.appendChild(formula);
+          }
+
+          formulaBucket = [];
+        }
+
+        function appendPlainText(value) {
+          const normalized = normalizeFlowText(value);
+          if (normalized) {
+            replacement.appendChild(doc.createTextNode(normalized));
+          }
+        }
+
+        for (const node of sourceNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            // Einrückungs-Whitespace aus dem Quellcode wird verworfen.
+            if (!normalizeFlowText(node.textContent || '').trim()) continue;
+
+            flushFormula();
+            appendPlainText(node.textContent || '');
+            continue;
+          }
+
+          if (isMathElement(node, 'mtext')) {
+            flushFormula();
+            appendPlainText(node.textContent || '');
+            continue;
+          }
+
+          // Leere mi/mo/mn dienen in Altdaten oft nur als Abstandhalter.
+          if (isSpacingOnlyMathToken(node)) {
+            flushFormula();
+            appendPlainText(' ');
+            continue;
+          }
+
+          formulaBucket.push(node);
+        }
+
+        flushFormula();
+        math.replaceWith(replacement);
+        return true;
+      }
+
+      /*
+        Strukturelle Sanitation und Konvertierung:
+        - entfernt aktive Inhalte und Eventhandler,
+        - erlaubt nur einen begrenzten Satz HTML-/MathML-Elemente,
+        - repariert ungültiges <text> innerhalb von MathML zu <mtext>,
+        - extrahiert top-level-mtext als normalen HTML-Fließtext,
+        - ergänzt MathML-Namespace, display und overflow für Formelsegmente.
+
+        Wichtig für einen späteren CMS-Einsatz:
+        Diese Browserroutine ist eine Referenz für die Darstellungslogik.
+        Sophora sollte zusätzlich eine serverseitige Allowlist/Sanitation
+        verwenden, bevor redaktionelles Markup in die Seite gelangt.
+      */
+      function parseAndSanitize(source, audit = null) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(
+          `<div id="mathml-import-root">${source}</div>`,
+          'text/html'
+        );
+        const root = doc.getElementById('mathml-import-root');
+
+        const activeElements = Array.from(
+          root.querySelectorAll('script, style, iframe, object, embed, link, meta')
+        );
+        recordAudit(audit, 'removedActiveElements', activeElements.length);
+        activeElements.forEach(node => node.remove());
+
+        // Bekannter Syntaxfehler aus Exportquellen: <text> statt <mtext>.
+        root.querySelectorAll('math text').forEach(node => {
+          const mtext = doc.createElementNS(MATHML_NS, 'mtext');
+          recordAudit(audit, 'repairedTextElements');
+
+          for (const attr of Array.from(node.attributes)) {
+            mtext.setAttribute(attr.name, attr.value);
+          }
+
+          while (node.firstChild) mtext.appendChild(node.firstChild);
+          node.replaceWith(mtext);
+        });
+
+        const allElements = Array.from(root.querySelectorAll('*')).reverse();
+
+        for (const element of allElements) {
+          const name = element.localName.toLowerCase();
+          const insideMath = Boolean(element.closest('math'));
+          const allowed = insideMath
+            ? SAFE_MATHML.has(name)
+            : SAFE_HTML.has(name);
+
+          if (!allowed) {
+            if (['svg', 'foreignobject', 'canvas', 'video', 'audio'].includes(name)) {
+              recordAudit(audit, 'removedElements');
+              element.remove();
+              continue;
+            }
+
+            recordAudit(audit, 'unwrappedElements');
+            element.replaceWith(...Array.from(element.childNodes));
+            continue;
+          }
+
+          for (const attr of Array.from(element.attributes)) {
+            const attrName = attr.name.toLowerCase();
+            const isAllowed =
+              SAFE_GLOBAL_ATTRIBUTES.has(attrName) ||
+              (insideMath && SAFE_MATH_ATTRIBUTES.has(attrName));
+
+            if (!isAllowed || attrName.startsWith('on')) {
+              recordAudit(audit, 'removedAttributes');
+              element.removeAttribute(attr.name);
+            }
+          }
+        }
+
+        const mathElements = Array.from(root.querySelectorAll('math'));
+
+        for (const math of mathElements) {
+          if (math.getAttribute('xmlns') !== MATHML_NS) {
+            recordAudit(audit, 'addedMathNamespaces');
+          }
+          math.setAttribute('xmlns', MATHML_NS);
+
+          const display = (math.getAttribute('display') || 'inline').toLowerCase();
+          const normalizedDisplay = display === 'block' ? 'block' : 'inline';
+          if (math.getAttribute('display') !== normalizedDisplay) {
+            recordAudit(audit, 'normalizedMathDisplays');
+          }
+          math.setAttribute('display', normalizedDisplay);
+
+          if (!math.hasAttribute('overflow')) {
+            recordAudit(audit, 'addedMathOverflows');
+            math.setAttribute('overflow', 'linebreak');
+          }
+
+          /*
+            Lose, inhaltliche Textknoten direkt unter <math> werden zunächst
+            als mtext markiert. Dadurch laufen sie anschließend durch dieselbe
+            geprüfte Extraktionsroutine wie reguläres mtext.
+          */
+          for (const child of Array.from(math.childNodes)) {
+            if (child.nodeType === Node.TEXT_NODE &&
+                normalizeFlowText(child.textContent || '').trim()) {
+              const mtext = doc.createElementNS(MATHML_NS, 'mtext');
+              mtext.textContent = child.textContent;
+              math.replaceChild(mtext, child);
+            }
+          }
+
+          if (convertMixedMathToHtmlFlow(math, doc)) {
+            recordAudit(audit, 'convertedMixedMath');
+          }
+        }
+
+        const fragment = document.createDocumentFragment();
+        while (root.firstChild) fragment.appendChild(root.firstChild);
+        return fragment;
+      }
+
+      /* Serialisiert ein bereinigtes Fragment mithilfe des nativen HTML-Parsers. */
+      function fragmentToHtml(fragment) {
+        const holder = document.createElement('div');
+        holder.appendChild(fragment.cloneNode(true));
+        return holder.innerHTML;
+      }
+
+
+      /*
+        Erzeugt eine lesbare, aber weiterhin ausführbare Darstellung des
+        bereits sanitisierten DOM.
+
+        Ziel:
+        - reine HTML-Textpassagen bleiben als zusammenhängender Fließtext
+          in derselben Zeile,
+        - <br> bleibt echtes HTML und beendet die betreffende Textzeile,
+        - MathML wird elementweise eingerückt,
+        - dieselbe kanonische Fassung wird für Codeanzeige, Vorschau,
+          abgedocktes Fenster und Export verwendet.
+
+        Die zusätzlichen Zeilenumbrüche und Einrückungen sind HTML-Whitespace.
+        Sie werden vom Browser im Fließtext zu normalen Abständen reduziert
+        und verändern die MathML-Struktur nicht.
+      */
+      function formatSanitizedCode(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(
+          `<div id="pretty-root">${html}</div>`,
+          'text/html'
+        );
+        const root = doc.getElementById('pretty-root');
+
+        return Array.from(root.childNodes)
+          .map(node => formatHtmlNode(node, 0))
+          .filter(Boolean)
+          .join('\n');
+      }
+
+      /* Maskiert Text für die spätere Ausgabe als ausführbares HTML-Markup. */
+      function escapeCodeText(value) {
+        return value
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+
+      /* Ergänzt zur Textmaskierung die für doppelt quotierte Attribute nötige Regel. */
+      function escapeCodeAttribute(value) {
+        return escapeCodeText(value).replace(/"/g, '&quot;');
+      }
+
+      /* Serialisiert die bereits geprüften Attribute in stabiler DOM-Reihenfolge. */
+      function formatAttributes(element) {
+        return Array.from(element.attributes)
+          .map(attr => ` ${attr.name}="${escapeCodeAttribute(attr.value)}"`)
+          .join('');
+      }
+
+      /*
+        Vereinheitlicht Quelltext-Whitespace für die kanonische Ausgabe. Bewusste
+        Zeilenumbrüche werden als erlaubte <br>-Elemente separat verarbeitet.
+      */
+      function normalizePrettyText(value) {
+        return value
+          .replace(/\u00A0/g, ' ')
+          .replace(/[ \t\r\n\f]+/g, ' ');
+      }
+
+      /* Elemente, die ohne eigenen Blockumbruch kompakt serialisiert werden. */
+      function isInlineHtmlElement(element) {
+        return [
+          'span', 'strong', 'b', 'em', 'i', 'code', 'br', 'math'
+        ].includes(element.localName.toLowerCase());
+      }
+
+      /* Formatiert einen HTML-Knoten rekursiv mit einer Einrückung pro DOM-Ebene. */
+      function formatHtmlNode(node, depth) {
+        const indent = '  '.repeat(depth);
+
+        if (node.nodeType === Node.TEXT_NODE) {
+          const value = normalizePrettyText(node.textContent || '');
+          return value.trim() ? `${indent}${escapeCodeText(value)}` : '';
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        const name = node.localName.toLowerCase();
+        if (name === 'math') {
+          return formatMathNode(node, depth);
+        }
+
+        const attrs = formatAttributes(node);
+        const children = Array.from(node.childNodes);
+
+        if (name === 'br') {
+          return `${indent}<br>`;
+        }
+
+        /*
+          Absatzartige HTML-Elemente werden so ausgegeben, dass normaler
+          Fließtext und Inline-MathML im selben Absatz bleiben. Das MathML
+          beginnt dabei in einer neuen, eingerückten Zeile; Text vor und nach
+          der Formel wird jeweils als zusammenhängende Zeile ausgegeben.
+        */
+        if (['p', 'div', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+            .includes(name)) {
+          const contentIndent = '  '.repeat(depth + 1);
+          const lines = [`${indent}<${name}${attrs}>`];
+
+          /*
+            Der Puffer enthält bereits HTML-maskierten Text bzw. bewusst
+            zugelassenes Inline-Markup. Er darf daher beim Leeren nicht noch
+            einmal vollständig escaped werden. Genau dieser Unterschied ist
+            entscheidend, damit <br> nicht zu sichtbarem "&lt;br&gt;" wird.
+          */
+          let flowBuffer = '';
+          let hasFlowContent = false;
+          let lastOutputWasMath = false;
+          let lastLineHasFlowSuffix = false;
+
+          function bufferHasVisibleContent() {
+            return flowBuffer.trim().length > 0;
+          }
+
+          function flushFlowBuffer() {
+            if (bufferHasVisibleContent()) {
+              lines.push(`${contentIndent}${flowBuffer.trimEnd()}`);
+              hasFlowContent = true;
+            }
+
+            flowBuffer = '';
+            lastOutputWasMath = false;
+            lastLineHasFlowSuffix = false;
+          }
+
+          function appendFlowText(value) {
+            let normalized = normalizePrettyText(value);
+            if (!normalized.trim()) return;
+
+            const beginsWithSpace = /^\s/.test(normalized);
+
+            /*
+              Ein Textteil ohne führenden Abstand direkt nach </math> wird an
+              die schließende MathML-Zeile angefügt. Dadurch bleibt z. B.
+              "</math>-Achse" semantisch unverändert.
+            */
+            if (lastOutputWasMath && !beginsWithSpace && !flowBuffer) {
+              lines[lines.length - 1] += escapeCodeText(normalized.trimEnd());
+              hasFlowContent = true;
+              lastOutputWasMath = false;
+              lastLineHasFlowSuffix = true;
+              return;
+            }
+
+            if (!flowBuffer) {
+              /*
+                Am Anfang einer neuen formatierten Codezeile liefert der
+                Zeilenumbruch bereits HTML-Whitespace. Zusätzlicher
+                Einrückungs-Whitespace aus dem Eingabequelltext wird entfernt.
+              */
+              normalized = normalized.trimStart();
+            }
+
+            flowBuffer += escapeCodeText(normalized);
+            lastOutputWasMath = false;
+            lastLineHasFlowSuffix = false;
+          }
+
+          function appendInlineMarkup(markup) {
+            flowBuffer += markup;
+            hasFlowContent = true;
+            lastOutputWasMath = false;
+            lastLineHasFlowSuffix = false;
+          }
+
+          function appendHardBreak() {
+            /*
+              <br> beendet die aktuelle sichtbare Textzeile. Es bleibt echtes
+              HTML-Markup und wird deshalb auch im exportierten Dokument als
+              fester Umbruch interpretiert.
+            */
+            if (bufferHasVisibleContent()) {
+              flowBuffer = `${flowBuffer.trimEnd()}<br>`;
+              flushFlowBuffer();
+              return;
+            }
+
+            if (lastLineHasFlowSuffix && lines.length > 1) {
+              lines[lines.length - 1] += '<br>';
+              lastLineHasFlowSuffix = false;
+              hasFlowContent = true;
+              return;
+            }
+
+            if (lastOutputWasMath && lines.length > 1) {
+              lines[lines.length - 1] += '<br>';
+              lastOutputWasMath = false;
+              lastLineHasFlowSuffix = false;
+              hasFlowContent = true;
+              return;
+            }
+
+            lines.push(`${contentIndent}<br>`);
+            hasFlowContent = true;
+            lastOutputWasMath = false;
+          }
+
+          function appendFormattedMath(mathElement) {
+            const mathLines = formatMathNode(mathElement, depth + 1)
+              .split('\n');
+
+            /*
+              Fehlt vor <math> absichtlich ein Leerzeichen, wird das öffnende
+              <math>-Tag an die laufende Textzeile angefügt. Bei vorhandenem
+              Abstand darf die eingerückte neue Codezeile zugleich den
+              kollabierenden HTML-Abstand liefern.
+            */
+            if (bufferHasVisibleContent() && !/\s$/.test(flowBuffer)) {
+              const firstMathLine = mathLines.shift().trimStart();
+              flowBuffer += firstMathLine;
+              lines.push(`${contentIndent}${flowBuffer.trimEnd()}`);
+              flowBuffer = '';
+              lines.push(...mathLines);
+            } else {
+              flushFlowBuffer();
+              lines.push(...mathLines);
+            }
+
+            hasFlowContent = true;
+            lastOutputWasMath = true;
+            lastLineHasFlowSuffix = false;
+          }
+
+          for (const child of children) {
+            if (child.nodeType === Node.TEXT_NODE) {
+              appendFlowText(child.textContent || '');
+              continue;
+            }
+
+            if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+            const childName = child.localName.toLowerCase();
+
+            if (childName === 'br') {
+              appendHardBreak();
+              continue;
+            }
+
+            if (childName === 'math') {
+              appendFormattedMath(child);
+              continue;
+            }
+
+            if (isInlineHtmlElement(child)) {
+              appendInlineMarkup(serializeInlineHtml(child));
+              continue;
+            }
+
+            flushFlowBuffer();
+            const formatted = formatHtmlNode(child, depth + 1);
+            if (formatted) {
+              lines.push(formatted);
+              hasFlowContent = true;
+            }
+          }
+
+          flushFlowBuffer();
+
+          /*
+            Leere Blockelemente bleiben syntaktisch vollständig. Die Variable
+            hasFlowContent dokumentiert hier bewusst den Zustand und erleichtert
+            spätere Erweiterungen der kanonischen Ausgabe.
+          */
+          void hasFlowContent;
+
+          lines.push(`${indent}</${name}>`);
+          return lines.join('\n');
+        }
+
+        /*
+          Sonstige Inline-HTML-Elemente kompakt darstellen.
+        */
+        if (isInlineHtmlElement(node)) {
+          return `${indent}${serializeInlineHtml(node)}`;
+        }
+
+        const lines = [`${indent}<${name}${attrs}>`];
+        for (const child of children) {
+          const formatted = formatHtmlNode(child, depth + 1);
+          if (formatted) lines.push(formatted);
+        }
+        lines.push(`${indent}</${name}>`);
+        return lines.join('\n');
+      }
+
+      /* Serialisiert erlaubtes Inline-HTML kompakt innerhalb einer Fließtextzeile. */
+      function serializeInlineHtml(element) {
+        const name = element.localName.toLowerCase();
+        const attrs = formatAttributes(element);
+
+        if (name === 'br') return '<br>';
+
+        const content = Array.from(element.childNodes)
+          .map(child => {
+            if (child.nodeType === Node.TEXT_NODE) {
+              return escapeCodeText(normalizePrettyText(child.textContent || ''));
+            }
+            if (child.nodeType === Node.ELEMENT_NODE &&
+                child.localName.toLowerCase() === 'math') {
+              return '';
+            }
+            if (child.nodeType === Node.ELEMENT_NODE) {
+              return serializeInlineHtml(child);
+            }
+            return '';
+          })
+          .join('');
+
+        return `<${name}${attrs}>${content}</${name}>`;
+      }
+
+      /*
+        Formatiert MathML getrennt von HTML: Token bleiben kompakt, während
+        strukturierende Elemente wie Brüche und Indizes eingerückt werden.
+      */
+      function formatMathNode(node, depth) {
+        const indent = '  '.repeat(depth);
+
+        if (node.nodeType === Node.TEXT_NODE) {
+          const value = normalizePrettyText(node.textContent || '').trim();
+          return value ? `${indent}${escapeCodeText(value)}` : '';
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        const name = node.localName.toLowerCase();
+        const attrs = formatAttributes(node);
+        const children = Array.from(node.childNodes).filter(child => {
+          return child.nodeType !== Node.TEXT_NODE ||
+            normalizePrettyText(child.textContent || '').trim();
+        });
+
+        if (!children.length) {
+          return `${indent}<${name}${attrs}></${name}>`;
+        }
+
+        /*
+          MathML-Token mit reinem Textinhalt kompakt in einer Zeile.
+          Gruppierende und strukturelle MathML-Elemente werden eingerückt.
+        */
+        const tokenElements = new Set(['mi', 'mn', 'mo', 'mtext', 'ms']);
+        const onlyText =
+          children.every(child => child.nodeType === Node.TEXT_NODE);
+
+        if (tokenElements.has(name) && onlyText) {
+          const content = children
+            .map(child => escapeCodeText(
+              normalizePrettyText(child.textContent || '')
+            ))
+            .join('');
+          return `${indent}<${name}${attrs}>${content}</${name}>`;
+        }
+
+        const lines = [`${indent}<${name}${attrs}>`];
+        for (const child of children) {
+          const formatted = formatMathNode(child, depth + 1);
+          if (formatted) lines.push(formatted);
+        }
+        lines.push(`${indent}</${name}>`);
+        return lines.join('\n');
+      }
+
+      /* Führt Import, Sanitation und DOM-Serialisierung für die aktuelle Eingabe aus. */
+      function getSanitizedHtml(audit = null) {
+        return fragmentToHtml(sourceToDocumentFragment(sourceInput.value, audit));
+      }
+
+      /*
+        Erzeugt Code und Änderungsprotokoll in einem gemeinsamen Durchlauf, damit
+        sich die Zusammenfassung stets auf exakt den dargestellten Inhalt bezieht.
+      */
+      function getSanitizationResult() {
+        const audit = createSanitizationAudit();
+        const html = formatSanitizedCode(getSanitizedHtml(audit));
+        audit.preservedBreaks = (html.match(/<br>/g) || []).length;
+        return { html, audit };
+      }
+
+      /*
+        Zentrale Ausgabequelle der Anwendung.
+
+        Diese Funktion wird bewusst von allen Ausgabepfaden verwendet:
+        - sichtbarer Sanitized Code,
+        - integrierte Vorschau,
+        - abgedockte Vorschau,
+        - exportierte Mobiltest-Datei.
+
+        Dadurch ist der im Codefenster sichtbare Inhalt exakt der Inhalt,
+        der anschließend vom Browser und von MathJax interpretiert wird.
+      */
+      function getReadableSanitizedHtml() {
+        return formatSanitizedCode(getSanitizedHtml());
+      }
+
+      /* Stellt die gezählten Eingriffe als kurze, rein textuelle Liste dar. */
+      function renderSanitizationSummary(audit) {
+        const changes = [];
+
+        const add = (count, singular, plural) => {
+          if (count) changes.push(`${count} ${count === 1 ? singular : plural}`);
+        };
+
+        add(audit.plainTextParagraphs,
+          'Textabsatz aus unformatiertem Text erzeugt',
+          'Textabsätze aus unformatiertem Text erzeugt');
+        add(audit.removedActiveElements,
+          'aktives oder einbettendes Element entfernt',
+          'aktive oder einbettende Elemente entfernt');
+        add(audit.repairedTextElements,
+          '<text>-Element zu <mtext> repariert',
+          '<text>-Elemente zu <mtext> repariert');
+        add(audit.removedElements,
+          'nicht erlaubtes Medienelement vollständig entfernt',
+          'nicht erlaubte Medienelemente vollständig entfernt');
+        add(audit.unwrappedElements,
+          'nicht erlaubtes Element entfernt, Inhalt beibehalten',
+          'nicht erlaubte Elemente entfernt, Inhalte beibehalten');
+        add(audit.removedAttributes,
+          'nicht erlaubtes Attribut entfernt',
+          'nicht erlaubte Attribute entfernt');
+        add(audit.addedMathNamespaces,
+          'MathML-Namespace ergänzt',
+          'MathML-Namespaces ergänzt');
+        add(audit.normalizedMathDisplays,
+          'MathML-display ergänzt oder normalisiert',
+          'MathML-display-Angaben ergänzt oder normalisiert');
+        add(audit.addedMathOverflows,
+          'MathML-overflow="linebreak" ergänzt',
+          'MathML-overflow="linebreak"-Angaben ergänzt');
+        add(audit.convertedMixedMath,
+          'gemischten MathML-Fluss in HTML-Text und Formel aufgeteilt',
+          'gemischte MathML-Flüsse in HTML-Text und Formeln aufgeteilt');
+
+        if (!changes.length) {
+          changes.push('Keine strukturellen oder sicherheitsrelevanten Änderungen nötig.');
+        }
+
+        changes.push(
+          `Whitespace kanonisch formatiert; ${audit.preservedBreaks} ` +
+          `${audit.preservedBreaks === 1 ? '<br>-Umbruch' : '<br>-Umbrüche'} beibehalten.`
+        );
+
+        const list = document.createElement('ul');
+        changes.forEach(message => {
+          const item = document.createElement('li');
+          item.textContent = message;
+          list.appendChild(item);
+        });
+        changeSummary.replaceChildren(list);
+      }
+
+      /* Ersetzt einen Vorschauinhalt und lässt ausschließlich diesen Container setzen. */
+      async function typesetContainer(container, html) {
+        if (!window.MathJax?.typesetPromise) {
+          throw new Error('MathJax ist noch nicht geladen.');
+        }
+
+        if (window.MathJax.typesetClear) {
+          window.MathJax.typesetClear([container]);
+        }
+
+        container.innerHTML = html;
+        await window.MathJax.typesetPromise([container]);
+      }
+
+      /* Synchronisiert Codeanzeige, integrierte Vorschau und geöffnetes Popup. */
+      async function renderPreview() {
+        try {
+          setStatus('Vorschau wird berechnet …');
+
+          /*
+            Ein gemeinsamer Durchlauf erzeugt den sanitisierten und lesbar
+            formatierten Code. Genau diese Fassung wird angezeigt und
+            anschließend auch für Vorschau und Export verwendet.
+
+            textContent ist für die Codeanzeige wichtig: Der Quelltext wird
+            dort sichtbar dargestellt. typesetContainer() interpretiert
+            dieselbe Zeichenfolge anschließend als HTML/MathML.
+          */
+          const result = getSanitizationResult();
+          const html = result.html;
+          minimalCode.textContent = html;
+          renderSanitizationSummary(result.audit);
+
+          await typesetContainer(previewViewport, html);
+
+          if (previewWindow && !previewWindow.closed &&
+              typeof previewWindow.updateMathPreview === 'function') {
+            previewWindow.updateMathPreview(html);
+          }
+
+          setStatus(
+            'Vorschau, Exportquelle und Sanitized Code wurden aktualisiert.',
+            'success'
+          );
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message || 'Vorschau konnte nicht erzeugt werden.', 'error');
+        }
+      }
+
+      /*
+        Übernimmt die simulierte Gerätebreite. Beim Start kann das verzögerte
+        Rendering deaktiviert werden, da start() unmittelbar selbst rendert.
+      */
+      function updatePreviewWidth(scheduleRender = true) {
+        const width = Number(widthSlider.value);
+        previewViewport.style.width = `${width}px`;
+        widthOutput.value = `${width} px`;
+        widthOutput.textContent = `${width} px`;
+
+        if (scheduleRender) {
+          clearTimeout(renderTimer);
+          renderTimer = setTimeout(renderPreview, 160);
+        }
+      }
+
+      /* Lädt ein externes Skript und meldet Erfolg oder Fehler als Promise zurück. */
+      function loadScript(url) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = url;
+          script.defer = true;
+          script.onload = () => resolve(url);
+          script.onerror = () => {
+            script.remove();
+            reject(new Error(`MathJax konnte nicht geladen werden: ${url}`));
+          };
+          document.head.appendChild(script);
+        });
+      }
+
+      /* Verwendet bevorzugt eine lokale MathJax-Kopie und fällt auf das CDN zurück. */
+      async function loadMathJax() {
+        const localUrl = new URL('./mathjax/mml-chtml.js', location.href).href;
+        const candidates = [localUrl, MATHJAX_CDN];
+
+        for (const candidate of candidates) {
+          try {
+            loadedMathJaxUrl = await loadScript(candidate);
+            await window.MathJax.startup.promise;
+            return;
+          } catch (error) {
+            console.warn(error.message);
+          }
+        }
+
+        throw new Error(
+          'MathJax konnte weder lokal noch über das CDN geladen werden.'
+        );
+      }
+
+      /*
+        Erstellt ein eigenständiges Vorschaufenster. Die öffentliche Schnittstelle
+        des Öffnerfensters hält Inhalt und Downloadfunktion anschließend synchron.
+      */
+      function createDetachedPreview() {
+        const popup = window.open(
+          '',
+          'MathMLDetachedPreview',
+          'popup=yes,width=980,height=720,resizable=yes,scrollbars=yes'
+        );
+
+        if (!popup) {
+          setStatus('Das Vorschaufenster wurde vom Browser blockiert.', 'error');
+          return;
+        }
+
+        previewWindow = popup;
+        const mathJaxUrl = loadedMathJaxUrl || MATHJAX_CDN;
+        const initialWidth = Number(widthSlider.value);
+        const initialHtml = getReadableSanitizedHtml();
+
+        popup.document.open();
+        popup.document.write(`<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Abgedockte MathML-Vorschau</title>
+<script>
+window.MathJax = {
+  startup: {typeset: false},
+  output: {
+    displayOverflow: 'linebreak',
+    linebreaks: {inline: true, width: '100%', lineleading: 0.2}
+  }
+};
+<\/script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#17202a}
+.toolbar{position:sticky;top:0;z-index:2;display:flex;gap:.7rem;align-items:center;
+padding:.65rem;background:#f4f6f8;border-bottom:1px solid #d8e0e7}
+.toolbar input{flex:1}
+.toolbar output{min-width:5rem;text-align:right;font-weight:700}
+button{font:inherit;padding:.5rem .75rem;border:1px solid #b9c4cf;border-radius:.5rem;background:#fff}
+.stage{min-height:calc(100vh - 58px);overflow:auto;padding:1rem;background:#eef2f5}
+.viewport{width:${initialWidth}px;min-height:250px;margin:0 auto;padding:1rem;background:#fff;
+border:1px solid #d8e0e7;border-radius:.45rem;overflow-wrap:anywhere}
+.viewport .mjx-mixed-line,.viewport .mjx-text-segment,.viewport .mjx-formula-segment,
+.viewport .mjx-text-run{display:inline}
+.viewport math[display="inline"],.viewport mjx-container:not([display="true"]){display:inline}
+.viewport mjx-container{max-width:100%}
+.viewport p{margin:0 0 1em}
+<\/style>
+<script defer src="${mathJaxUrl}"><\/script>
+</head>
+<body>
+<div class="toolbar">
+  <input id="detachedWidth" type="range" min="280" max="1400" step="10" value="${initialWidth}">
+  <output id="detachedOutput">${initialWidth} px</output>
+  <button id="detachedDownload" type="button">HTML herunterladen</button>
+</div>
+<div class="stage">
+  <article id="detachedViewport" class="viewport"></article>
+</div>
+<script>
+let rawHtml = ${JSON.stringify(initialHtml)};
+let timer = 0;
+const viewport = document.getElementById('detachedViewport');
+const slider = document.getElementById('detachedWidth');
+const output = document.getElementById('detachedOutput');
+
+async function draw() {
+  if (!window.MathJax?.typesetPromise) return;
+  if (window.MathJax.typesetClear) MathJax.typesetClear([viewport]);
+  viewport.innerHTML = rawHtml;
+  await MathJax.typesetPromise([viewport]);
+}
+
+window.updateMathPreview = async function(html) {
+  rawHtml = html;
+  await draw();
+};
+
+slider.addEventListener('input', () => {
+  viewport.style.width = slider.value + 'px';
+  output.textContent = slider.value + ' px';
+  clearTimeout(timer);
+  timer = setTimeout(draw, 150);
+});
+
+document.getElementById('detachedDownload').addEventListener('click', () => {
+  if (window.opener?.MathMLInlineInterpreter) {
+    window.opener.MathMLInlineInterpreter.downloadStandalone();
+  }
+});
+
+window.addEventListener('load', async () => {
+  viewport.style.width = slider.value + 'px';
+  await MathJax.startup.promise;
+  await draw();
+});
+<\/script>
+</body>
+</html>`);
+        popup.document.close();
+      }
+
+      /* Minimales Stylesheet für die exportierte, von der Werkzeug-UI unabhängige Seite. */
+      function standaloneStyles() {
+        return `
+:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+line-height:1.5;color:#17202a;background:#fff}
+*{box-sizing:border-box}
+body{margin:0;padding:clamp(1rem,4vw,3rem)}
+main{width:min(75rem,100%);margin:0 auto;overflow-wrap:anywhere}
+.mjx-mixed-line,.mjx-text-segment,.mjx-formula-segment,.mjx-text-run{display:inline}
+math[display="inline"],mjx-container:not([display="true"]){display:inline}
+mjx-container{max-width:100%}
+mjx-container[display="true"]{margin:.65em 0}
+p{margin:0 0 1em}`;
+      }
+
+      /* Entfernt einen im Einzeldatei-Export nicht mehr auflösbaren Source-Map-Verweis. */
+      function stripSourceMapComment(source) {
+        return source.replace(/\/\/# sourceMappingURL=.*$/gm, '');
+      }
+
+      /* Liefert die gewählte oder einmalig vom CDN geladene MathJax-Quelldatei. */
+      async function getMathJaxSourceForExport() {
+        if (chosenMathJaxSource) return chosenMathJaxSource;
+        if (fetchedMathJaxSource) return fetchedMathJaxSource;
+
+        const response = await fetch(MATHJAX_CDN, { mode: 'cors' });
+        if (!response.ok) {
+          throw new Error(
+            `MathJax-Modul konnte nicht geladen werden (${response.status}).`
+          );
+        }
+
+        fetchedMathJaxSource = stripSourceMapComment(await response.text());
+        return fetchedMathJaxSource;
+      }
+
+      /* Baut Sanitized Code, Styles und MathJax zu einer herunterladbaren HTML-Datei. */
+      async function downloadStandalone() {
+        const oldText = downloadButton.textContent;
+        downloadButton.disabled = true;
+        downloadButton.textContent = 'MathJax wird eingebettet …';
+
+        try {
+          setStatus('Eigenständige Testseite wird erzeugt …');
+          const cleanHtml = getReadableSanitizedHtml();
+          let mathJaxSource = await getMathJaxSourceForExport();
+
+          // Verhindert, dass eine Zeichenfolge im Bibliothekscode das
+          // umschließende script-Element der Exportdatei beendet.
+          mathJaxSource = mathJaxSource.replace(/<\/script/gi, '<\\/script');
+
+          const standalone = `<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MathML-Mobiltest</title>
+<style>${standaloneStyles()}</style>
+<script>
+window.MathJax = {
+  output: {
+    displayOverflow: 'linebreak',
+    linebreaks: {inline: true, width: '100%', lineleading: 0.2}
+  }
+};
+<\/script>
+<script>${mathJaxSource}<\/script>
+</head>
+<body>
+<main class="rendered-content">
+<!--
+  Der folgende Inhalt ist dieselbe lesbar formatierte und sanitierte Fassung,
+  die in der Referenzanwendung im Bereich „Sanitized Code“ angezeigt wurde.
+-->
+${cleanHtml}
+</main>
+</body>
+</html>`;
+
+          const blob = new Blob([standalone], {
+            type: 'text/html;charset=utf-8'
+          });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'mathml-mobile-test-standalone.html';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+          setStatus(
+            'Eigenständige HTML-Datei mit eingebettetem MathJax wurde erzeugt.',
+            'success'
+          );
+        } catch (error) {
+          console.error(error);
+          setStatus(
+            `${error.message} Alternativ ein lokales mml-chtml.js auswählen.`,
+            'error'
+          );
+        } finally {
+          downloadButton.disabled = false;
+          downloadButton.textContent = oldText;
+        }
+      }
+
+      /* Liest eine optionale lokale MathJax-Datei ausschließlich für den Export. */
+      mathJaxFile.addEventListener('change', async () => {
+        const file = mathJaxFile.files?.[0];
+        if (!file) {
+          chosenMathJaxSource = '';
+          return;
+        }
+
+        chosenMathJaxSource = stripSourceMapComment(await file.text());
+        setStatus(
+          `Lokales MathJax-Modul „${file.name}“ für den Export geladen.`,
+          'success'
+        );
+      });
+
+      /* Ereignisbindung der sichtbaren Bedienelemente. */
+      renderButton.addEventListener('click', renderPreview);
+      document.getElementById('resetButton').addEventListener('click', () => {
+        sourceInput.value = DEFAULT_SNIPPET;
+        renderPreview();
+      });
+
+      document.getElementById('copyButton').addEventListener('click', async () => {
+        const result = getSanitizationResult();
+        const currentMinimalCode = result.html;
+        minimalCode.textContent = currentMinimalCode;
+        renderSanitizationSummary(result.audit);
+
+        try {
+          await navigator.clipboard.writeText(currentMinimalCode);
+          setStatus('Aktuell bereinigter Sanitized Code wurde kopiert.', 'success');
+        } catch {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(minimalCode);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('copy');
+          selection.removeAllRanges();
+          setStatus('Aktuell bereinigter Sanitized Code wurde kopiert.', 'success');
+        }
+      });
+
+      widthSlider.addEventListener('input', () => updatePreviewWidth());
+      document.getElementById('detachButton')
+        .addEventListener('click', createDetachedPreview);
+      downloadButton.addEventListener('click', downloadStandalone);
+
+      // Öffentliche Schnittstelle für das abgedockte Fenster.
+      window.MathMLInlineInterpreter = {
+        downloadStandalone,
+        renderPreview
+      };
+
+      /* Initialisiert MathJax, setzt die Ausgangsbreite und rendert den Testfall. */
+      async function start() {
+        try {
+          setStatus('MathJax wird geladen …');
+          await loadMathJax();
+          updatePreviewWidth(false);
+          await renderPreview();
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, 'error');
+        }
+      }
+
+      start();
+    })();
+  </script>
+</body>
+</html>
