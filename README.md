@@ -7,7 +7,7 @@ direkt im Browser und benötigt keinen Webserver und keine Installation.
 Die Anwendung befindet sich in:
 
 ```text
-mathml_inline_interpreter_export_v6_br.html
+MathML-sanitizer.html
 ```
 
 ## Funktionen
@@ -28,7 +28,7 @@ mathml_inline_interpreter_export_v6_br.html
 ## Lokaler Start
 
 1. Den Ordner `C:\AI-Work\math-ml` im Datei-Explorer öffnen.
-2. `mathml_inline_interpreter_export_v6_br.html` doppelt anklicken.
+2. `MathML-sanitizer.html` doppelt anklicken.
 3. Falls Windows nach einer Anwendung fragt, einen aktuellen Browser auswählen,
    beispielsweise Edge, Chrome oder Firefox.
 
@@ -37,7 +37,7 @@ Alternativ kann die Datei in ein geöffnetes Browserfenster gezogen oder über
 Adresse nach diesem Muster:
 
 ```text
-file:///C:/AI-Work/math-ml/mathml_inline_interpreter_export_v6_br.html
+file:///C:/AI-Work/math-ml/MathML-sanitizer.html
 ```
 
 ## MathJax laden
@@ -54,7 +54,7 @@ aufgebaut werden:
 
 ```text
 math-ml/
-├── mathml_inline_interpreter_export_v6_br.html
+├── MathML-sanitizer.html
 ├── README.md
 └── mathjax/
     └── mml-chtml.js
