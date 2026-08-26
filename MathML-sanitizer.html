@@ -199,6 +199,10 @@
       margin: 0 0 1em;
     }
 
+    .rendered-content p:last-child {
+      margin-bottom: 0;
+    }
+
     .rendered-content math[display="inline"],
     .rendered-content mjx-container:not([display="true"]) {
       display: inline;
@@ -320,6 +324,9 @@
       bleiben MathML und werden von MathJax gerendert. Ein
       <code>&lt;br&gt;</code> im HTML-Text bleibt erhalten und erzeugt in
       Vorschau, abgedocktem Fenster und Export einen festen Zeilenumbruch.
+      Nur für die Darstellung fasst die Vorschau zusammengehörigen Fließtext
+      in Absätze; diese zusätzlichen <code>&lt;p&gt;</code>-Elemente erscheinen
+      nicht im Sanitized Code.
     </p>
 
     <!-- Hauptarbeitsbereich mit Quelle, Aktionen und responsiver Vorschau. -->
@@ -364,14 +371,13 @@
 
         <p id="status" class="status" role="status" aria-live="polite"></p>
 
-        <!-- Kanonische Ausgabe, die auch für Vorschau und Export verwendet wird. -->
+        <!-- Kanonische Ausgabe ohne die nur in der Vorschau verwendeten Absatz-Wrapper. -->
         <details open>
           <summary>Sanitized Code</summary>
           <div class="result-grid">
             <section class="result-pane" aria-labelledby="codeResultTitle">
               <h3 id="codeResultTitle">Gereinigter Code</h3>
-              <pre><code id="minimalCode">&lt;p&gt;
-  Es gilt:&lt;br&gt;
+              <pre><code id="minimalCode">Es gilt:&lt;br&gt;
   Ist der Graph
   &lt;math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;inline&quot; overflow=&quot;linebreak&quot;&gt;
     &lt;msub&gt;&lt;mi&gt;G&lt;/mi&gt;&lt;mi&gt;f&lt;/mi&gt;&lt;/msub&gt;
@@ -396,8 +402,7 @@
       &lt;mo&gt;=&lt;/mo&gt;
       &lt;mi&gt;f&lt;/mi&gt;&lt;mo&gt;(&lt;/mo&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mo&gt;)&lt;/mo&gt;
     &lt;/mrow&gt;
-  &lt;/math&gt;.
-&lt;/p&gt;</code></pre>
+  &lt;/math&gt;.</code></pre>
             </section>
             <aside class="result-pane" aria-labelledby="changeSummaryTitle">
               <h3 id="changeSummaryTitle">Änderungen am Ursprungscode</h3>
@@ -488,6 +493,10 @@
         <br> ist ausdrücklich Teil der Allowlist. Es wird nicht in Text
         umgewandelt, sondern bleibt als semantischer HTML-Zeilenumbruch in
         Sanitized Code, Vorschau, Popup und Export erhalten.
+
+        <p> wird beim Import zunächst akzeptiert, anschließend aber in einen
+        neutralen Fluss mit <br>-Marken überführt. Erst die Vorschau erzeugt
+        daraus wieder reine Darstellungsabsätze.
       */
       /* Erlaubte Strukturelemente außerhalb von MathML. */
       const SAFE_HTML = new Set([
@@ -546,6 +555,7 @@
           plainTextParagraphs: 0,
           removedActiveElements: 0,
           repairedTextElements: 0,
+          unwrappedTextContainers: 0,
           removedElements: 0,
           unwrappedElements: 0,
           removedAttributes: 0,
@@ -553,6 +563,10 @@
           normalizedMathDisplays: 0,
           addedMathOverflows: 0,
           convertedMixedMath: 0,
+          convertedTextEqualities: 0,
+          joinedFormulaSpacing: 0,
+          normalizedFormulaMtextSpacing: 0,
+          flattenedParagraphs: 0,
           preservedBreaks: 0
         };
       }
@@ -563,7 +577,39 @@
       }
 
       /*
-        Reiner Text wird in Absätze umgewandelt. Enthält die Eingabe Markup,
+        Repariert das in Exportdaten vorkommende, aber in MathML ungültige
+        <text>-Element abhängig von seinem Inhalt:
+
+        - Reiner Text wird als <mtext> erhalten.
+        - Enthält <text> bereits MathML-Kindelemente, ist es nur ein fehlerhafter
+          Container. Dann wird ausschließlich der Wrapper entfernt. Strukturen
+          wie <mfrac><mtext>km</mtext><mtext>h</mtext></mfrac> bleiben dadurch
+          vollständig im MathML-Baum und werden nicht zu "km h" abgeflacht.
+      */
+      function repairInvalidMathTextElements(root, doc, audit = null) {
+        root.querySelectorAll('math text').forEach(node => {
+          if (node.children.length) {
+            recordAudit(audit, 'unwrappedTextContainers');
+            node.replaceWith(...Array.from(node.childNodes));
+            return;
+          }
+
+          const mtext = doc.createElementNS(MATHML_NS, 'mtext');
+          recordAudit(audit, 'repairedTextElements');
+
+          for (const attr of Array.from(node.attributes)) {
+            mtext.setAttribute(attr.name, attr.value);
+          }
+
+          while (node.firstChild) mtext.appendChild(node.firstChild);
+          node.replaceWith(mtext);
+        });
+      }
+
+      /*
+        Reiner Text wird in einen HTML-Fluss umgewandelt. Einzelne Zeilenenden
+        werden zu <br>, Leerzeilen zu zwei aufeinanderfolgenden <br>. Enthält
+        die Eingabe Markup,
         wird sie als HTML/MathML geparst und anschließend per Allowlist
         strukturell bereinigt.
       */
@@ -575,11 +621,11 @@
             .split(/\n\s*\n/)
             .map(block => block.trim())
             .filter(Boolean);
-          const paragraphs = blocks
-            .map(block => `<p>${escapePlainText(block).replace(/\n/g, '<br>')}</p>`)
-            .join('');
+          const flow = blocks
+            .map(block => escapePlainText(block).replace(/\n/g, '<br>'))
+            .join('<br><br>');
           recordAudit(audit, 'plainTextParagraphs', blocks.length || 1);
-          return parseAndSanitize(paragraphs || '<p></p>', audit);
+          return parseAndSanitize(flow, audit);
         }
 
         return parseAndSanitize(source, audit);
@@ -649,15 +695,88 @@
       }
 
       /*
-        Entfernt reine Abstands-mtext aus dem verbleibenden Formelbaum.
+        Ein Gleichheitszeichen darf nur dann aus einem Textknoten zu einem
+        Operator werden, wenn der Text nach der Whitespace-Normalisierung exakt
+        "=" lautet. Zusätzliche Wörter oder Satzzeichen schließen die Regel aus.
+      */
+      function isTextEncodedEquality(node) {
+        const isTextNode = node?.nodeType === Node.TEXT_NODE;
+        const isMtext = isMathElement(node, 'mtext');
+        if (!isTextNode && !isMtext) return false;
+
+        return normalizeFlowText(node.textContent || '').trim() === '=';
+      }
+
+      /*
+        Diese Elemente können innerhalb einer Formel wichtig sein, sind allein
+        aber kein Operand, der die Umdeutung eines textuellen "=" rechtfertigt.
+      */
+      const NON_FORMULA_ANCHOR_ELEMENTS = new Set([
+        'mspace', 'none', 'mprescripts', 'annotation', 'annotation-xml'
+      ]);
+
+      /* Ein Formelanker ist ein inhaltliches MathML-Element, kein Text/Metadatum. */
+      function isFormulaFlowNode(node) {
+        if (node?.nodeType !== Node.ELEMENT_NODE) return false;
+
+        const name = node.localName?.toLowerCase();
+        return !isMathElement(node, 'mtext') &&
+          !isSpacingOnlyMathToken(node) &&
+          !NON_FORMULA_ANCHOR_ELEMENTS.has(name);
+      }
+
+      /*
+        Sucht rechts vom aktuellen Knoten den nächsten inhaltlichen Flussknoten.
+        Einrückungen, Kommentare und reine MathML-Abstandshalter sind dabei keine
+        Trennzeichen zwischen zwei Formelteilen.
+      */
+      function findNextSignificantFlowNode(nodes, startIndex) {
+        for (let index = startIndex; index < nodes.length; index += 1) {
+          const candidate = nodes[index];
+
+          if (candidate.nodeType === Node.TEXT_NODE &&
+              !normalizeFlowText(candidate.textContent || '').trim()) {
+            continue;
+          }
+
+          if (isSpacingOnlyMathToken(candidate) ||
+              isMathElement(candidate, 'mspace')) continue;
+          if (candidate.nodeType === Node.COMMENT_NODE) continue;
+          return candidate;
+        }
+
+        return null;
+      }
+
+      /*
+        Bereinigt mtext innerhalb des verbleibenden Formelbaums:
+        - reine Abstandselemente werden entfernt,
+        - führender und nachgestellter Leerraum wird entfernt,
+        - geschützte Leerzeichen im Text werden zu normalen Leerzeichen.
+
         Beispiel: <msub><mi>G</mi><mrow><mi>f</mi><mtext>&nbsp;</mtext></mrow>
         Solcher Leerraum ist keine Formelinformation und soll nicht von
         MathJax als mathematischer Text gesetzt werden.
+
+        Die Regel läuft erst auf den endgültigen Formelsegmenten. Ausgelagerter
+        HTML-Fließtext behält dadurch seine erforderlichen Wortabstände.
       */
-      function removeFormulaOnlySpacing(math) {
+      function normalizeFormulaTokenSpacing(math, audit = null) {
         math.querySelectorAll('mtext').forEach(node => {
-          if (normalizeFlowText(node.textContent || '').trim() === '') {
+          const original = node.textContent || '';
+          const normalized = original.replace(/\u00A0/g, ' ').trim();
+
+          if (!normalized) {
             node.remove();
+            return;
+          }
+
+          const containsOnlyText = Array.from(node.childNodes)
+            .every(child => child.nodeType === Node.TEXT_NODE);
+
+          if (containsOnlyText && normalized !== original) {
+            node.textContent = normalized;
+            recordAudit(audit, 'normalizedFormulaMtextSpacing');
           }
         });
 
@@ -668,8 +787,76 @@
         });
       }
 
+      /*
+        Entfernt semantische <p>-Wrapper aus der kanonischen Sanitizer-Ausgabe.
+        Zwei <br> markieren dort eine vorhandene Absatzgrenze, ohne einen
+        einzelnen, ausdrücklich gesetzten Zeilenumbruch umzudeuten. Die
+        Vorschau rekonstruiert aus diesen Grenzen später wieder <p>-Elemente.
+
+        Die Prüfung der benachbarten Knoten verhindert überzählige Trennmarker,
+        wenn mehrere Quellabsätze direkt aufeinanderfolgen.
+      */
+      function flattenParagraphElements(root, doc, audit = null) {
+        function isSignificant(node) {
+          return node?.nodeType === Node.ELEMENT_NODE ||
+            (node?.nodeType === Node.TEXT_NODE &&
+             normalizeFlowText(node.textContent || '').trim());
+        }
+
+        function significantSibling(node, direction) {
+          let sibling = node[direction];
+          while (sibling && !isSignificant(sibling)) sibling = sibling[direction];
+          return sibling;
+        }
+
+        function hasBreakPairBefore(node) {
+          let count = 0;
+          let sibling = node.previousSibling;
+
+          while (sibling) {
+            if (sibling.nodeType === Node.TEXT_NODE &&
+                !normalizeFlowText(sibling.textContent || '').trim()) {
+              sibling = sibling.previousSibling;
+              continue;
+            }
+            if (isMathElement(sibling, 'br')) {
+              count += 1;
+              if (count === 2) return true;
+              sibling = sibling.previousSibling;
+              continue;
+            }
+            break;
+          }
+
+          return false;
+        }
+
+        function appendBreakPair(fragment) {
+          fragment.appendChild(doc.createElement('br'));
+          fragment.appendChild(doc.createElement('br'));
+        }
+
+        Array.from(root.querySelectorAll('p')).forEach(paragraph => {
+          const previous = significantSibling(paragraph, 'previousSibling');
+          const next = significantSibling(paragraph, 'nextSibling');
+          const replacement = doc.createDocumentFragment();
+
+          if (previous && !hasBreakPairBefore(paragraph)) {
+            appendBreakPair(replacement);
+          }
+
+          while (paragraph.firstChild) {
+            replacement.appendChild(paragraph.firstChild);
+          }
+
+          if (next) appendBreakPair(replacement);
+          paragraph.replaceWith(replacement);
+          recordAudit(audit, 'flattenedParagraphs');
+        });
+      }
+
       /* Baut aus einem Formelsegment ein eigenständiges Inline-MathML-Element. */
-      function createInlineMathFromNodes(originalMath, nodes, doc) {
+      function createInlineMathFromNodes(originalMath, nodes, doc, audit = null) {
         const math = doc.createElementNS(MATHML_NS, 'math');
 
         for (const attr of Array.from(originalMath.attributes)) {
@@ -682,14 +869,16 @@
         math.setAttribute('overflow', 'linebreak');
 
         nodes.forEach(node => math.appendChild(node.cloneNode(true)));
-        removeFormulaOnlySpacing(math);
+        normalizeFormulaTokenSpacing(math, audit);
 
         return math;
       }
 
       /*
         Kernroutine: Ein gemischtes <math> wird an seinen top-level-mtext-
-        Elementen in HTML-Text und MathML-Formelsegmente aufgeteilt.
+        Elementen in HTML-Text und MathML-Formelsegmente aufgeteilt. Reine
+        Abstandshalter verbinden benachbarte Formelteile. Ein isoliertes "="
+        zwischen zwei Formelgliedern wird als <mo>-Operator repariert.
 
         Vorher:
           <math><mtext>Text</mtext><mi>x</mi><mtext>Text</mtext></math>
@@ -700,13 +889,14 @@
         Dadurch behandelt der Browser die Erläuterungen als normalen Fließtext.
         Nur die mathematischen Segmente gelangen zu MathJax.
       */
-      function convertMixedMathToHtmlFlow(math, doc) {
+      function convertMixedMathToHtmlFlow(math, doc, audit = null) {
         const flowRoot = findMixedMathFlowRoot(math);
         if (!flowRoot) return false;
 
         const sourceNodes = Array.from(flowRoot.childNodes);
         const replacement = doc.createDocumentFragment();
         let formulaBucket = [];
+        let pendingFormulaSpacing = false;
 
         function flushFormula() {
           if (!formulaBucket.length) return;
@@ -714,7 +904,8 @@
           const formula = createInlineMathFromNodes(
             math,
             formulaBucket,
-            doc
+            doc,
+            audit
           );
 
           if (formula.childNodes.length) {
@@ -731,33 +922,130 @@
           }
         }
 
-        for (const node of sourceNodes) {
-          if (node.nodeType === Node.TEXT_NODE) {
-            // Einrückungs-Whitespace aus dem Quellcode wird verworfen.
-            if (!normalizeFlowText(node.textContent || '').trim()) continue;
+        function formulaBucketHasContent() {
+          return formulaBucket.some(node => isFormulaFlowNode(node));
+        }
 
-            flushFormula();
-            appendPlainText(node.textContent || '');
-            continue;
+        function lastFormulaAnchor() {
+          for (let index = formulaBucket.length - 1; index >= 0; index -= 1) {
+            const candidate = formulaBucket[index];
+            if (isFormulaFlowNode(candidate)) return candidate;
           }
 
-          if (isMathElement(node, 'mtext')) {
-            flushFormula();
-            appendPlainText(node.textContent || '');
+          return null;
+        }
+
+        function hasTrailingMathSpacing() {
+          for (let index = formulaBucket.length - 1; index >= 0; index -= 1) {
+            const candidate = formulaBucket[index];
+            if (isMathElement(candidate, 'mspace')) return true;
+            if (isFormulaFlowNode(candidate)) return false;
+          }
+
+          return false;
+        }
+
+        /*
+          Ein Abstand zwischen zwei Formelgliedern wird als mspace erhalten.
+          Direkt neben einem mo-Operator oder nach einem bereits vorhandenen
+          mspace ist kein zusätzlicher Abstand nötig.
+        */
+        function consumePendingFormulaSpacing(nextFormulaNode) {
+          if (!pendingFormulaSpacing) return;
+
+          const previousAnchor = lastFormulaAnchor();
+          const operatorProvidesSpacing =
+            isMathElement(previousAnchor, 'mo') ||
+            isMathElement(nextFormulaNode, 'mo');
+          const explicitSpacingExists = hasTrailingMathSpacing();
+
+          if (!operatorProvidesSpacing && !explicitSpacingExists) {
+            const spacing = doc.createElementNS(MATHML_NS, 'mspace');
+            spacing.setAttribute('width', '0.25em');
+            formulaBucket.push(spacing);
+          }
+
+          recordAudit(audit, 'joinedFormulaSpacing');
+          pendingFormulaSpacing = false;
+        }
+
+        /*
+          Ein als MathML-Token codierter Abstand wird zunächst zurückgehalten.
+          Folgt ein weiteres Formelglied, bleibt alles ein MathML-Snippet. Folgt
+          Erläuterungstext, wird der Abstand als normaler HTML-Leerraum ausgegeben.
+        */
+        function flushFormulaBeforePlainText() {
+          flushFormula();
+          if (pendingFormulaSpacing) appendPlainText(' ');
+          pendingFormulaSpacing = false;
+        }
+
+        for (let index = 0; index < sourceNodes.length; index += 1) {
+          const node = sourceNodes[index];
+          const isSourceIndentation = node.nodeType === Node.TEXT_NODE &&
+            !normalizeFlowText(node.textContent || '').trim();
+
+          // Einrückungs-Whitespace aus dem Quellcode ist kein Inhaltsabstand.
+          if (isSourceIndentation) continue;
+
+          const isFlowText = node.nodeType === Node.TEXT_NODE ||
+            isMathElement(node, 'mtext');
+
+          if (isFlowText) {
+            const value = node.textContent || '';
+
+            if (isSpacingOnlyMathToken(node)) {
+              if (formulaBucketHasContent()) {
+                pendingFormulaSpacing = true;
+              } else {
+                appendPlainText(' ');
+              }
+              continue;
+            }
+
+            const nextNode = findNextSignificantFlowNode(sourceNodes, index + 1);
+            const equalityBetweenFormulaParts =
+              isTextEncodedEquality(node) &&
+              formulaBucketHasContent() &&
+              isFormulaFlowNode(nextNode);
+
+            if (equalityBetweenFormulaParts) {
+              const operator = doc.createElementNS(MATHML_NS, 'mo');
+              if (node.nodeType === Node.ELEMENT_NODE) {
+                for (const attr of Array.from(node.attributes)) {
+                  operator.setAttribute(attr.name, attr.value);
+                }
+              }
+              operator.textContent = '=';
+              consumePendingFormulaSpacing(operator);
+              formulaBucket.push(operator);
+              recordAudit(audit, 'convertedTextEqualities');
+              continue;
+            }
+
+            flushFormulaBeforePlainText();
+            appendPlainText(value);
             continue;
           }
 
           // Leere mi/mo/mn dienen in Altdaten oft nur als Abstandhalter.
           if (isSpacingOnlyMathToken(node)) {
-            flushFormula();
-            appendPlainText(' ');
+            if (formulaBucketHasContent()) {
+              pendingFormulaSpacing = true;
+            } else {
+              appendPlainText(' ');
+            }
             continue;
           }
 
+          if (pendingFormulaSpacing && isFormulaFlowNode(node)) {
+            consumePendingFormulaSpacing(node);
+          }
           formulaBucket.push(node);
         }
 
         flushFormula();
+        if (pendingFormulaSpacing) appendPlainText(' ');
         math.replaceWith(replacement);
         return true;
       }
@@ -766,7 +1054,8 @@
         Strukturelle Sanitation und Konvertierung:
         - entfernt aktive Inhalte und Eventhandler,
         - erlaubt nur einen begrenzten Satz HTML-/MathML-Elemente,
-        - repariert ungültiges <text> innerhalb von MathML zu <mtext>,
+        - repariert einfache <text>-Elemente zu <mtext> und entfernt
+          strukturtragende <text>-Wrapper ohne Verlust ihrer MathML-Kinder,
         - extrahiert top-level-mtext als normalen HTML-Fließtext,
         - ergänzt MathML-Namespace, display und overflow für Formelsegmente.
 
@@ -789,18 +1078,7 @@
         recordAudit(audit, 'removedActiveElements', activeElements.length);
         activeElements.forEach(node => node.remove());
 
-        // Bekannter Syntaxfehler aus Exportquellen: <text> statt <mtext>.
-        root.querySelectorAll('math text').forEach(node => {
-          const mtext = doc.createElementNS(MATHML_NS, 'mtext');
-          recordAudit(audit, 'repairedTextElements');
-
-          for (const attr of Array.from(node.attributes)) {
-            mtext.setAttribute(attr.name, attr.value);
-          }
-
-          while (node.firstChild) mtext.appendChild(node.firstChild);
-          node.replaceWith(mtext);
-        });
+        repairInvalidMathTextElements(root, doc, audit);
 
         const allElements = Array.from(root.querySelectorAll('*')).reverse();
 
@@ -870,10 +1148,15 @@
             }
           }
 
-          if (convertMixedMathToHtmlFlow(math, doc)) {
+          if (convertMixedMathToHtmlFlow(math, doc, audit)) {
             recordAudit(audit, 'convertedMixedMath');
+          } else {
+            normalizeFormulaTokenSpacing(math, audit);
           }
         }
+
+        // Absatz-Tags sind nur eine Eingabe- und Vorschaustruktur, kein Exportformat.
+        flattenParagraphElements(root, doc, audit);
 
         const fragment = document.createDocumentFragment();
         while (root.firstChild) fragment.appendChild(root.firstChild);
@@ -897,8 +1180,7 @@
           in derselben Zeile,
         - <br> bleibt echtes HTML und beendet die betreffende Textzeile,
         - MathML wird elementweise eingerückt,
-        - dieselbe kanonische Fassung wird für Codeanzeige, Vorschau,
-          abgedocktes Fenster und Export verwendet.
+        - die kanonische Fassung bleibt frei von reinen Vorschau-Wrappern.
 
         Die zusätzlichen Zeilenumbrüche und Einrückungen sind HTML-Whitespace.
         Sie werden vom Browser im Fließtext zu normalen Abständen reduziert
@@ -912,9 +1194,19 @@
         );
         const root = doc.getElementById('pretty-root');
 
-        return Array.from(root.childNodes)
-          .map(node => formatHtmlNode(node, 0))
-          .filter(Boolean)
+        /*
+          Der künstliche Wrapper aktiviert dieselbe Fließtextlogik, die auch
+          innerhalb eines Absatzes gilt. Anschließend wird nur der Wrapper aus
+          der formatierten Ausgabe entfernt. Dadurch bleibt z. B. </math>.
+          ohne ein durch die Code-Einrückung eingeschobenes Leerzeichen.
+        */
+        const flowWrapper = doc.createElement('p');
+        while (root.firstChild) flowWrapper.appendChild(root.firstChild);
+        const wrappedLines = formatHtmlNode(flowWrapper, 0).split('\n');
+
+        return wrappedLines
+          .slice(1, -1)
+          .map(line => line.startsWith('  ') ? line.slice(2) : line)
           .join('\n');
       }
 
@@ -1263,22 +1555,23 @@
       */
       function getSanitizationResult() {
         const audit = createSanitizationAudit();
-        const html = formatSanitizedCode(getSanitizedHtml(audit));
+        const sanitizedHtml = getSanitizedHtml(audit);
+        const html = formatSanitizedCode(sanitizedHtml);
+        const previewHtml = createPreviewHtml(sanitizedHtml);
         audit.preservedBreaks = (html.match(/<br>/g) || []).length;
-        return { html, audit };
+        return { html, previewHtml, audit };
       }
 
       /*
         Zentrale Ausgabequelle der Anwendung.
 
-        Diese Funktion wird bewusst von allen Ausgabepfaden verwendet:
+        Diese Funktion ist die zentrale Quelle für Ausgaben des Sanitizers:
         - sichtbarer Sanitized Code,
-        - integrierte Vorschau,
-        - abgedockte Vorschau,
-        - exportierte Mobiltest-Datei.
+        - Zwischenablage,
+        - Grundlage der exportierten Mobiltest-Datei.
 
-        Dadurch ist der im Codefenster sichtbare Inhalt exakt der Inhalt,
-        der anschließend vom Browser und von MathJax interpretiert wird.
+        Die Vorschau ergänzt ausschließlich temporäre <p>-Wrapper und verändert
+        weder MathML noch die im Code vorhandenen <br>-Umbrüche.
       */
       function getReadableSanitizedHtml() {
         return formatSanitizedCode(getSanitizedHtml());
@@ -1293,14 +1586,17 @@
         };
 
         add(audit.plainTextParagraphs,
-          'Textabsatz aus unformatiertem Text erzeugt',
-          'Textabsätze aus unformatiertem Text erzeugt');
+          'unformatierten Textblock in HTML-Fluss überführt',
+          'unformatierte Textblöcke in HTML-Fluss überführt');
         add(audit.removedActiveElements,
           'aktives oder einbettendes Element entfernt',
           'aktive oder einbettende Elemente entfernt');
         add(audit.repairedTextElements,
           '<text>-Element zu <mtext> repariert',
           '<text>-Elemente zu <mtext> repariert');
+        add(audit.unwrappedTextContainers,
+          'strukturtragenden <text>-Wrapper entfernt, MathML-Inhalt beibehalten',
+          'strukturtragende <text>-Wrapper entfernt, MathML-Inhalte beibehalten');
         add(audit.removedElements,
           'nicht erlaubtes Medienelement vollständig entfernt',
           'nicht erlaubte Medienelemente vollständig entfernt');
@@ -1322,6 +1618,18 @@
         add(audit.convertedMixedMath,
           'gemischten MathML-Fluss in HTML-Text und Formel aufgeteilt',
           'gemischte MathML-Flüsse in HTML-Text und Formeln aufgeteilt');
+        add(audit.convertedTextEqualities,
+          'als Text codiertes Gleichheitszeichen zu <mo> repariert',
+          'als Text codierte Gleichheitszeichen zu <mo> repariert');
+        add(audit.joinedFormulaSpacing,
+          'durch reinen Abstand getrennte Formelteile zusammengeführt',
+          'durch reine Abstände getrennte Formelteile zusammengeführt');
+        add(audit.normalizedFormulaMtextSpacing,
+          'Leerraum an einem <mtext>-Formelrand entfernt',
+          'Leerräume an <mtext>-Formelrändern entfernt');
+        add(audit.flattenedParagraphs,
+          '<p>-Wrapper aus dem Sanitized Code entfernt',
+          '<p>-Wrapper aus dem Sanitized Code entfernt');
 
         if (!changes.length) {
           changes.push('Keine strukturellen oder sicherheitsrelevanten Änderungen nötig.');
@@ -1329,7 +1637,8 @@
 
         changes.push(
           `Whitespace kanonisch formatiert; ${audit.preservedBreaks} ` +
-          `${audit.preservedBreaks === 1 ? '<br>-Umbruch' : '<br>-Umbrüche'} beibehalten.`
+          `${audit.preservedBreaks === 1 ? '<br>-Umbruch' : '<br>-Umbrüche'} ` +
+          'in der Ausgabe vorhanden.'
         );
 
         const list = document.createElement('ul');
@@ -1339,6 +1648,101 @@
           list.appendChild(item);
         });
         changeSummary.replaceChildren(list);
+      }
+
+      /*
+        Erzeugt die ausschließlich für die Darstellung verwendete Absatzstruktur.
+
+        - Zusammenhängender Text und Inline-MathML landen im selben <p>.
+        - Ein einzelnes <br> bleibt ein fester Zeilenumbruch in diesem Absatz.
+        - Zwei aufeinanderfolgende <br> markieren den Wechsel zum nächsten Absatz.
+        - Vorhandene Blockelemente begrenzen einen Fließtextabschnitt ebenfalls.
+
+        Der übergebene Sanitized Code selbst wird dabei nicht verändert und
+        enthält nach flattenParagraphElements() keine <p>-Elemente.
+      */
+      function createPreviewHtml(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(
+          `<div id="preview-root">${html}</div>`,
+          'text/html'
+        );
+        const root = doc.getElementById('preview-root');
+        const blockNames = new Set([
+          'blockquote', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+          'li', 'ol', 'pre', 'ul'
+        ]);
+        const paragraphContainers = new Set(['blockquote', 'div', 'li']);
+
+        function paragraphize(container) {
+          const sourceNodes = Array.from(container.childNodes);
+          const output = doc.createDocumentFragment();
+          let paragraph = null;
+          let consecutiveBreaks = 0;
+
+          function ensureParagraph() {
+            if (!paragraph) paragraph = doc.createElement('p');
+            return paragraph;
+          }
+
+          function paragraphHasContent() {
+            return paragraph && Array.from(paragraph.childNodes).some(node => {
+              return node.nodeType === Node.ELEMENT_NODE ||
+                normalizeFlowText(node.textContent || '').trim();
+            });
+          }
+
+          function flushParagraph() {
+            if (paragraphHasContent()) output.appendChild(paragraph);
+            paragraph = null;
+            consecutiveBreaks = 0;
+          }
+
+          for (const node of sourceNodes) {
+            const name = node.nodeType === Node.ELEMENT_NODE
+              ? node.localName.toLowerCase()
+              : '';
+
+            if (blockNames.has(name)) {
+              flushParagraph();
+              if (paragraphContainers.has(name)) paragraphize(node);
+              output.appendChild(node);
+              continue;
+            }
+
+            if (name === 'br') {
+              consecutiveBreaks += 1;
+
+              if (consecutiveBreaks === 2) {
+                const previousBreak = paragraph?.lastElementChild;
+                if (previousBreak?.localName.toLowerCase() === 'br') {
+                  previousBreak.remove();
+                }
+                flushParagraph();
+                continue;
+              }
+
+              ensureParagraph().appendChild(node);
+              continue;
+            }
+
+            if (node.nodeType === Node.TEXT_NODE &&
+                !normalizeFlowText(node.textContent || '').trim() &&
+                consecutiveBreaks) {
+              // Einrückungs-Whitespace unterbricht eine <br><br>-Grenze nicht.
+              continue;
+            }
+
+            consecutiveBreaks = 0;
+            ensureParagraph().appendChild(node);
+          }
+
+          flushParagraph();
+          container.replaceChildren(output);
+        }
+
+        paragraphize(root);
+        return root.innerHTML;
       }
 
       /* Ersetzt einen Vorschauinhalt und lässt ausschließlich diesen Container setzen. */
@@ -1361,24 +1765,24 @@
           setStatus('Vorschau wird berechnet …');
 
           /*
-            Ein gemeinsamer Durchlauf erzeugt den sanitisierten und lesbar
-            formatierten Code. Genau diese Fassung wird angezeigt und
-            anschließend auch für Vorschau und Export verwendet.
+            Ein gemeinsamer Durchlauf erzeugt den sanitisierten Code und die
+            davon abgeleitete Vorschaufassung. Nur die Vorschaufassung erhält
+            <p>-Wrapper; der sichtbare und kopierbare Code bleibt davon frei.
 
             textContent ist für die Codeanzeige wichtig: Der Quelltext wird
-            dort sichtbar dargestellt. typesetContainer() interpretiert
-            dieselbe Zeichenfolge anschließend als HTML/MathML.
+            dort sichtbar dargestellt. typesetContainer() interpretiert die
+            inhaltlich gleiche Vorschaufassung anschließend als HTML/MathML.
           */
           const result = getSanitizationResult();
           const html = result.html;
           minimalCode.textContent = html;
           renderSanitizationSummary(result.audit);
 
-          await typesetContainer(previewViewport, html);
+          await typesetContainer(previewViewport, result.previewHtml);
 
           if (previewWindow && !previewWindow.closed &&
               typeof previewWindow.updateMathPreview === 'function') {
-            previewWindow.updateMathPreview(html);
+            previewWindow.updateMathPreview(result.previewHtml);
           }
 
           setStatus(
@@ -1461,7 +1865,7 @@
         previewWindow = popup;
         const mathJaxUrl = loadedMathJaxUrl || MATHJAX_CDN;
         const initialWidth = Number(widthSlider.value);
-        const initialHtml = getReadableSanitizedHtml();
+        const initialHtml = createPreviewHtml(getSanitizedHtml());
 
         popup.document.open();
         popup.document.write(`<!doctype html>
@@ -1495,6 +1899,7 @@ border:1px solid #d8e0e7;border-radius:.45rem;overflow-wrap:anywhere}
 .viewport math[display="inline"],.viewport mjx-container:not([display="true"]){display:inline}
 .viewport mjx-container{max-width:100%}
 .viewport p{margin:0 0 1em}
+.viewport p:last-child{margin-bottom:0}
 <\/style>
 <script defer src="${mathJaxUrl}"><\/script>
 </head>
@@ -1586,7 +1991,7 @@ p{margin:0 0 1em}`;
         return fetchedMathJaxSource;
       }
 
-      /* Baut Sanitized Code, Styles und MathJax zu einer herunterladbaren HTML-Datei. */
+      /* Baut Vorschauinhalt, Styles und MathJax zu einer herunterladbaren HTML-Datei. */
       async function downloadStandalone() {
         const oldText = downloadButton.textContent;
         downloadButton.disabled = true;
@@ -1594,7 +1999,7 @@ p{margin:0 0 1em}`;
 
         try {
           setStatus('Eigenständige Testseite wird erzeugt …');
-          const cleanHtml = getReadableSanitizedHtml();
+          const cleanHtml = createPreviewHtml(getSanitizedHtml());
           let mathJaxSource = await getMathJaxSourceForExport();
 
           // Verhindert, dass eine Zeichenfolge im Bibliothekscode das
@@ -1621,8 +2026,8 @@ window.MathJax = {
 <body>
 <main class="rendered-content">
 <!--
-  Der folgende Inhalt ist dieselbe lesbar formatierte und sanitierte Fassung,
-  die in der Referenzanwendung im Bereich „Sanitized Code“ angezeigt wurde.
+  Der folgende Inhalt basiert auf dem Sanitized Code. Nur für diese Testseite
+  wurden dieselben temporären Absatz-Wrapper wie in der Vorschau ergänzt.
 -->
 ${cleanHtml}
 </main>
