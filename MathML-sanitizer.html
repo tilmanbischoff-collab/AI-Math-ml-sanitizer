@@ -3,7 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MathML Inline-Interpreter und Mobiltest-Export</title>
+  <!--
+    Zentrale Release-Angaben: Oberfläche und JavaScript lesen die aktuelle
+    Version aus diesen Metadaten. Bei einem Release werden nur diese beiden
+    Werte und der dokumentierte Versionsverlauf angepasst.
+  -->
+  <meta name="application-version" content="1.0.0">
+  <meta name="application-codename" content="Albert Einstein">
+  <title>MathML Inline-Interpreter</title>
 
   <!--
     MathJax 4 – globale Konfiguration.
@@ -62,6 +69,27 @@
       width: min(1500px, 100%);
       margin: 0 auto;
       padding: 1rem;
+    }
+
+    /* Sichtbare Release-Kennung am linken oberen Rand der Anwendung. */
+    .release-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin: 0 0 0.65rem;
+      padding: 0.3rem 0.6rem;
+      border: 1px solid #9bc4e2;
+      border-radius: 999px;
+      background: #eaf6ff;
+      color: #174f78;
+      font-size: 0.82rem;
+      font-weight: 750;
+      line-height: 1.2;
+    }
+
+    .release-badge .release-separator {
+      color: #527890;
+      font-weight: 500;
     }
 
     h1, h2 {
@@ -315,6 +343,12 @@
 
 <body>
   <main class="app-shell">
+    <p id="releaseBadge" class="release-badge" aria-live="polite"
+       aria-label="Release-Information wird geladen">
+      <span>Version wird geladen</span>
+      <span class="release-separator" aria-hidden="true">·</span>
+      <span>Codename wird geladen</span>
+    </p>
     <h1>MathML-Interpreter für gemischten Fließtext</h1>
     <p class="intro">
       Das Eingabefeld akzeptiert normalen Text, HTML und MathML, in dem
@@ -467,10 +501,24 @@
         'https://cdn.jsdelivr.net/npm/mathjax@4.1.3/mml-chtml.js';
 
       /*
+        Release-Metadaten werden aus dem HTML-Kopf gelesen. Damit verwenden
+        Badge, Export und öffentliche Schnittstelle garantiert dieselbe Version.
+      */
+      const APP_RELEASE = Object.freeze({
+        version: document.querySelector(
+          'meta[name="application-version"]'
+        )?.content || 'unbekannt',
+        codename: document.querySelector(
+          'meta[name="application-codename"]'
+        )?.content || 'ohne Codename'
+      });
+
+      /*
         Häufig verwendete DOM-Referenzen werden einmal aufgelöst. So bleiben
         Rendering- und Ereignisfunktionen frei von wiederholten DOM-Suchen.
       */
       const DEFAULT_SNIPPET = document.getElementById('sourceInput').value;
+      const releaseBadge = document.getElementById('releaseBadge');
       const sourceInput = document.getElementById('sourceInput');
       const previewViewport = document.getElementById('previewViewport');
       const minimalCode = document.getElementById('minimalCode');
@@ -542,6 +590,25 @@
         status.className = `status ${type}`.trim();
       }
 
+      /*
+        Synchronisiert die sichtbare Release-Kennung mit den Metadaten im
+        Dokumentkopf. Die statischen Texte im HTML dienen nur als Fallback,
+        falls JavaScript bereits vor der Initialisierung abbricht.
+      */
+      function renderReleaseMetadata() {
+        const [versionLabel, separator, codenameLabel] = releaseBadge.children;
+        versionLabel.textContent = `Version ${APP_RELEASE.version}`;
+        separator.textContent = '·';
+        codenameLabel.textContent = APP_RELEASE.codename;
+        releaseBadge.setAttribute(
+          'aria-label',
+          `Version ${APP_RELEASE.version}, Codename ${APP_RELEASE.codename}`
+        );
+        document.title =
+          `MathML Inline-Interpreter ${APP_RELEASE.version} – ` +
+          APP_RELEASE.codename;
+      }
+
       /* Maskiert reinen Text über den Browser-DOM statt über eine eigene Entitätenliste. */
       function escapePlainText(value) {
         const holder = document.createElement('div');
@@ -566,6 +633,8 @@
           convertedTextEqualities: 0,
           joinedFormulaSpacing: 0,
           normalizedFormulaMtextSpacing: 0,
+          convertedMathTextExpressions: 0,
+          preservedTextBracketPairs: 0,
           flattenedParagraphs: 0,
           preservedBreaks: 0
         };
@@ -705,6 +774,255 @@
         if (!isTextNode && !isMtext) return false;
 
         return normalizeFlowText(node.textContent || '').trim() === '=';
+      }
+
+      /*
+        Für eine vorsichtige Erkennung mathematischer Inhalte in <mtext> werden
+        nur eindeutig begrenzte Token zugelassen. Mehrbuchstabige Wörter gelten
+        grundsätzlich als Prosa. Ausgenommen sind bekannte Funktionsnamen und
+        kurze Großbuchstabenbezeichner wie AB oder LGS.
+
+        Diese Positivliste ist absichtlich enger als ein vollständiger
+        mathematischer Parser: Im Zweifelsfall bleibt der Inhalt normaler Text.
+      */
+      const KNOWN_MATH_TEXT_IDENTIFIERS = new Set([
+        'sin', 'cos', 'tan', 'cot', 'arcsin', 'arccos', 'arctan',
+        'log', 'ln', 'exp', 'lim', 'max', 'min', 'mod', 'ggt', 'kgv'
+      ]);
+      const COMMON_GERMAN_TEXT_WORDS = new Set([
+        'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer',
+        'eines', 'einem', 'einen', 'ist', 'sind', 'war', 'waren', 'wird',
+        'werden', 'und', 'oder', 'aber', 'wenn', 'dann', 'für', 'mit',
+        'ohne', 'von', 'zum', 'zur', 'im', 'in', 'am', 'an', 'auf', 'aus',
+        'bei', 'als', 'dass', 'siehe', 'vgl', 'punkt', 'achse', 'graph',
+        'funktion', 'ergebnis', 'lösung', 'gilt', 'sei', 'seien'
+      ]);
+      const MATH_TEXT_MULTI_OPERATORS = [
+        '<=', '>=', '!=', ':=', '->', '<-', '=>'
+      ];
+      const MATH_TEXT_SINGLE_OPERATORS = new Set([
+        '=', '+', '-', '−', '±', '∓', '×', '·', '*', '/', '÷', ':',
+        ';', ',', '<', '>', '≤', '≥', '≠', '≈', '∈', '∉', '∪', '∩',
+        '(', ')', '[', ']', '{', '}', '|'
+      ]);
+      const OPENING_MATH_BRACKETS = new Map([
+        ['(', ')'], ['[', ']'], ['{', '}']
+      ]);
+      const CLOSING_MATH_BRACKETS = new Map([
+        [')', '('], [']', '['], ['}', '{']
+      ]);
+
+      /*
+        Ein einzelner Buchstabe ist ein plausibler Variablenname. Ein längeres
+        Wort ist nur dann mathematisch, wenn es auf der kleinen Positivliste
+        steht oder aus höchstens drei Großbuchstaben besteht. Damit werden etwa
+        "siehe", "für" oder "Punkt" zuverlässig als Text erkannt.
+      */
+      function isLikelyProseText(value) {
+        const normalized = normalizeFlowText(value);
+        if (/(?:\p{L}\.\s*){2,}/u.test(normalized)) return true;
+        const words = normalized.match(/\p{L}+/gu) || [];
+
+        return words.some(word => {
+          const characters = Array.from(word);
+          const lowercaseWord = word.toLocaleLowerCase('de');
+          if (characters.length === 1) return false;
+          if (COMMON_GERMAN_TEXT_WORDS.has(lowercaseWord)) return true;
+          if (KNOWN_MATH_TEXT_IDENTIFIERS.has(lowercaseWord)) {
+            return false;
+          }
+          if (/^[A-ZÄÖÜ]{2,3}$/u.test(word)) return false;
+          return true;
+        });
+      }
+
+      /*
+        Zerlegt ausschließlich vollständig erkennbare mathematische Kurztexte.
+        Das Ergebnis enthält bereits den späteren MathML-Tokentyp:
+        Buchstaben/Funktionsnamen -> mi, Zahlen -> mn, Operatoren/Klammern -> mo.
+      */
+      function analyzeMathTextValue(value) {
+        const normalized = normalizeFlowText(value).trim();
+        if (!normalized || isLikelyProseText(normalized)) return null;
+
+        const tokens = [];
+        let index = 0;
+
+        while (index < normalized.length) {
+          const remainder = normalized.slice(index);
+          const whitespace = remainder.match(/^\s+/u);
+          if (whitespace) {
+            index += whitespace[0].length;
+            continue;
+          }
+
+          const multiOperator = MATH_TEXT_MULTI_OPERATORS
+            .find(operator => remainder.startsWith(operator));
+          if (multiOperator) {
+            tokens.push({type: 'mo', value: multiOperator});
+            index += multiOperator.length;
+            continue;
+          }
+
+          const number = remainder.match(/^\d+(?:[.,]\d+)?/u);
+          if (number) {
+            tokens.push({type: 'mn', value: number[0]});
+            index += number[0].length;
+            continue;
+          }
+
+          const identifier = remainder.match(/^\p{L}+/u);
+          if (identifier) {
+            tokens.push({type: 'mi', value: identifier[0]});
+            index += identifier[0].length;
+            continue;
+          }
+
+          const character = Array.from(remainder)[0];
+          if (!MATH_TEXT_SINGLE_OPERATORS.has(character)) return null;
+          tokens.push({type: 'mo', value: character});
+          index += character.length;
+        }
+
+        if (!tokens.length) return null;
+
+        const bracketStack = [];
+        let matchedBracketPairs = 0;
+        let unmatchedClosingBrackets = 0;
+
+        tokens.forEach(token => {
+          if (OPENING_MATH_BRACKETS.has(token.value)) {
+            bracketStack.push(token.value);
+            return;
+          }
+
+          const expectedOpening = CLOSING_MATH_BRACKETS.get(token.value);
+          if (!expectedOpening) return;
+          if (bracketStack[bracketStack.length - 1] === expectedOpening) {
+            bracketStack.pop();
+            matchedBracketPairs += 1;
+          } else {
+            unmatchedClosingBrackets += 1;
+          }
+        });
+
+        const operands = tokens.filter(token => token.type !== 'mo').length;
+        const hasOpeningBracket = tokens.some(token =>
+          OPENING_MATH_BRACKETS.has(token.value));
+        const hasClosingBracket = tokens.some(token =>
+          CLOSING_MATH_BRACKETS.has(token.value));
+        const hasSeparator = tokens.some(token =>
+          token.value === ';' || token.value === ',');
+        const hasRelation = tokens.some(token =>
+          ['=', '<', '>', '≤', '≥', '≠', '≈', '∈', '∉', '<=', '>=', '!=', ':=']
+            .includes(token.value));
+        const hasNonBracketOperator = tokens.some(token =>
+          token.type === 'mo' &&
+          !OPENING_MATH_BRACKETS.has(token.value) &&
+          !CLOSING_MATH_BRACKETS.has(token.value));
+        const isSelfContained = operands > 0 &&
+          bracketStack.length === 0 &&
+          unmatchedClosingBrackets === 0 &&
+          (matchedBracketPairs > 0 ||
+           (operands >= 2 && hasNonBracketOperator));
+
+        return {
+          tokens,
+          operands,
+          hasOpeningBracket,
+          hasClosingBracket,
+          hasSeparator,
+          hasRelation,
+          hasMathCue: tokens.some(token => token.type === 'mo'),
+          isOperatorOnly: operands === 0,
+          isSelfContained
+        };
+      }
+
+      /*
+        Reine Kontextentscheidung für ein bereits geprüftes Tokenpaket. Sie ist
+        getrennt von der DOM-Verarbeitung, damit die vorsichtigen Positivregeln
+        unabhängig getestet und bei Bedarf erweitert werden können.
+      */
+      function shouldConvertMathTextAnalysis(
+        analysis,
+        hasLeftFormula,
+        hasRightFormula
+      ) {
+        if (analysis.isSelfContained) return true;
+        if (analysis.hasOpeningBracket && hasRightFormula) return true;
+        if (analysis.hasClosingBracket && hasLeftFormula) return true;
+        if (analysis.hasSeparator && hasLeftFormula && hasRightFormula) {
+          return true;
+        }
+        if (analysis.hasRelation &&
+            ((analysis.operands > 0 && hasRightFormula) ||
+             (hasLeftFormula && hasRightFormula))) {
+          return true;
+        }
+        if (analysis.isOperatorOnly && hasLeftFormula && hasRightFormula) {
+          return true;
+        }
+        if (!analysis.hasMathCue && analysis.operands > 0 &&
+            hasLeftFormula && hasRightFormula) {
+          return true;
+        }
+
+        return false;
+      }
+
+      /*
+        Klammern, die erkennbaren Text umschließen, werden paarweise geschützt.
+        Beispiel:
+          <mtext>(</mtext><mtext>siehe Abbildung</mtext><mtext>)</mtext>
+        Sowohl die öffnende als auch die schließende Klammer bleiben dann Text.
+      */
+      function findTextualBracketGuards(nodes) {
+        const stack = [];
+        const guardedNodeIndexes = new Set();
+        let protectedPairs = 0;
+
+        nodes.forEach((node, nodeIndex) => {
+          const isTextNode = node.nodeType === Node.TEXT_NODE;
+          if (!isTextNode && !isMathElement(node, 'mtext')) return;
+
+          for (const character of Array.from(node.textContent || '')) {
+            if (OPENING_MATH_BRACKETS.has(character)) {
+              stack.push({character, nodeIndex});
+              continue;
+            }
+
+            const expectedOpening = CLOSING_MATH_BRACKETS.get(character);
+            if (!expectedOpening) continue;
+
+            let openingPosition = stack.length - 1;
+            while (openingPosition >= 0 &&
+                   stack[openingPosition].character !== expectedOpening) {
+              openingPosition -= 1;
+            }
+            if (openingPosition < 0) continue;
+
+            const opening = stack[openingPosition];
+            stack.splice(openingPosition, 1);
+            let enclosedText = '';
+
+            for (let index = opening.nodeIndex; index <= nodeIndex; index += 1) {
+              const candidate = nodes[index];
+              if (candidate.nodeType === Node.TEXT_NODE ||
+                  isMathElement(candidate, 'mtext')) {
+                enclosedText += ` ${candidate.textContent || ''}`;
+              }
+            }
+
+            if (isLikelyProseText(enclosedText)) {
+              guardedNodeIndexes.add(opening.nodeIndex);
+              guardedNodeIndexes.add(nodeIndex);
+              protectedPairs += 1;
+            }
+          }
+        });
+
+        return {guardedNodeIndexes, protectedPairs};
       }
 
       /*
@@ -877,8 +1195,10 @@
       /*
         Kernroutine: Ein gemischtes <math> wird an seinen top-level-mtext-
         Elementen in HTML-Text und MathML-Formelsegmente aufgeteilt. Reine
-        Abstandshalter verbinden benachbarte Formelteile. Ein isoliertes "="
-        zwischen zwei Formelgliedern wird als <mo>-Operator repariert.
+        Abstandshalter verbinden benachbarte Formelteile. Eindeutig
+        mathematische Kurztexte wie "L={", Klammern und Trennoperatoren werden
+        in native MathML-Token zerlegt. Ein isoliertes "=" zwischen zwei
+        Formelgliedern wird als <mo>-Operator repariert.
 
         Vorher:
           <math><mtext>Text</mtext><mi>x</mi><mtext>Text</mtext></math>
@@ -897,6 +1217,22 @@
         const replacement = doc.createDocumentFragment();
         let formulaBucket = [];
         let pendingFormulaSpacing = false;
+        const bracketGuards = findTextualBracketGuards(sourceNodes);
+        const mathTextAnalyses = new Map();
+
+        recordAudit(
+          audit,
+          'preservedTextBracketPairs',
+          bracketGuards.protectedPairs
+        );
+
+        sourceNodes.forEach((node, index) => {
+          if (!isMathElement(node, 'mtext') ||
+              bracketGuards.guardedNodeIndexes.has(index)) return;
+
+          const analysis = analyzeMathTextValue(node.textContent || '');
+          if (analysis) mathTextAnalyses.set(index, analysis);
+        });
 
         function flushFormula() {
           if (!formulaBucket.length) return;
@@ -924,6 +1260,69 @@
 
         function formulaBucketHasContent() {
           return formulaBucket.some(node => isFormulaFlowNode(node));
+        }
+
+        /*
+          Mathematischer Kontext rechts darf aus echtem MathML oder einem
+          weiteren eindeutig tokenisierbaren <mtext> bestehen. Prosa und eine
+          geschützte Textklammer beenden die Suche sofort.
+        */
+        function hasFormulaEvidenceAhead(startIndex) {
+          for (let index = startIndex; index < sourceNodes.length; index += 1) {
+            const candidate = sourceNodes[index];
+
+            if (candidate.nodeType === Node.COMMENT_NODE) continue;
+            if (candidate.nodeType === Node.TEXT_NODE &&
+                !normalizeFlowText(candidate.textContent || '').trim()) {
+              continue;
+            }
+            if (isSpacingOnlyMathToken(candidate) ||
+                isMathElement(candidate, 'mspace')) continue;
+            if (isFormulaFlowNode(candidate)) return true;
+
+            const analysis = mathTextAnalyses.get(index);
+            if (analysis &&
+                (analysis.hasMathCue || analysis.operands > 0)) return true;
+            return false;
+          }
+
+          return false;
+        }
+
+        /*
+          Entscheidet erst mit dem unmittelbaren Formelumfeld, ob ein gültig
+          tokenisierbarer Text tatsächlich mathematisch gemeint sein kann.
+          Einzelne Variablen werden nur innerhalb eines beidseitigen
+          mathematischen Zusammenhangs umgewandelt.
+        */
+        function shouldConvertMathText(analysis, index) {
+          const hasLeftFormula = formulaBucketHasContent();
+          const hasRightFormula = hasFormulaEvidenceAhead(index + 1);
+          return shouldConvertMathTextAnalysis(
+            analysis,
+            hasLeftFormula,
+            hasRightFormula
+          );
+        }
+
+        /* Erzeugt aus der geprüften Analyse ausschließlich native MathML-Token. */
+        function createMathNodesFromText(analysis) {
+          return analysis.tokens.map(token => {
+            const element = doc.createElementNS(MATHML_NS, token.type);
+            element.textContent = token.value;
+
+            if (token.type === 'mo' &&
+                (OPENING_MATH_BRACKETS.has(token.value) ||
+                 CLOSING_MATH_BRACKETS.has(token.value))) {
+              element.setAttribute('fence', 'true');
+            }
+            if (token.type === 'mo' &&
+                (token.value === ';' || token.value === ',')) {
+              element.setAttribute('separator', 'true');
+            }
+
+            return element;
+          });
         }
 
         function lastFormulaAnchor() {
@@ -999,6 +1398,23 @@
                 pendingFormulaSpacing = true;
               } else {
                 appendPlainText(' ');
+              }
+              continue;
+            }
+
+            const mathTextAnalysis = mathTextAnalyses.get(index);
+            if (mathTextAnalysis &&
+                shouldConvertMathText(mathTextAnalysis, index)) {
+              const mathNodes = createMathNodesFromText(mathTextAnalysis);
+              if (pendingFormulaSpacing && formulaBucketHasContent()) {
+                consumePendingFormulaSpacing(mathNodes[0]);
+              }
+              formulaBucket.push(...mathNodes);
+
+              if (normalizeFlowText(value).trim() === '=') {
+                recordAudit(audit, 'convertedTextEqualities');
+              } else {
+                recordAudit(audit, 'convertedMathTextExpressions');
               }
               continue;
             }
@@ -1627,6 +2043,12 @@
         add(audit.normalizedFormulaMtextSpacing,
           'Leerraum an einem <mtext>-Formelrand entfernt',
           'Leerräume an <mtext>-Formelrändern entfernt');
+        add(audit.convertedMathTextExpressions,
+          'mathematischen <mtext>-Kurzausdruck in MathML-Token umgewandelt',
+          'mathematische <mtext>-Kurzausdrücke in MathML-Token umgewandelt');
+        add(audit.preservedTextBracketPairs,
+          'Klammerpaar wegen erkennbaren Textinhalts als Text beibehalten',
+          'Klammerpaare wegen erkennbaren Textinhalts als Text beibehalten');
         add(audit.flattenedParagraphs,
           '<p>-Wrapper aus dem Sanitized Code entfernt',
           '<p>-Wrapper aus dem Sanitized Code entfernt');
@@ -1873,7 +2295,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Abgedockte MathML-Vorschau</title>
+<title>MathML-Vorschau ${APP_RELEASE.version} – ${APP_RELEASE.codename}</title>
 <script>
 window.MathJax = {
   startup: {typeset: false},
@@ -2011,7 +2433,8 @@ p{margin:0 0 1em}`;
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MathML-Mobiltest</title>
+<meta name="generator" content="MathML Sanitizer ${APP_RELEASE.version} – ${APP_RELEASE.codename}">
+<title>MathML-Mobiltest ${APP_RELEASE.version} – ${APP_RELEASE.codename}</title>
 <style>${standaloneStyles()}</style>
 <script>
 window.MathJax = {
@@ -2040,7 +2463,8 @@ ${cleanHtml}
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
-          link.download = 'mathml-mobile-test-standalone.html';
+          link.download =
+            `mathml-mobile-test-v${APP_RELEASE.version}-standalone.html`;
           document.body.appendChild(link);
           link.click();
           link.remove();
@@ -2112,6 +2536,7 @@ ${cleanHtml}
 
       // Öffentliche Schnittstelle für das abgedockte Fenster.
       window.MathMLInlineInterpreter = {
+        release: APP_RELEASE,
         downloadStandalone,
         renderPreview
       };
@@ -2119,6 +2544,7 @@ ${cleanHtml}
       /* Initialisiert MathJax, setzt die Ausgangsbreite und rendert den Testfall. */
       async function start() {
         try {
+          renderReleaseMetadata();
           setStatus('MathJax wird geladen …');
           await loadMathJax();
           updatePreviewWidth(false);

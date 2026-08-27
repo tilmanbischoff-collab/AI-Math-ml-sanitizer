@@ -22,6 +22,10 @@ MathML-sanitizer.html
 - Zusammenführung benachbarter Formelteile trotz reiner MathML-Abstandshalter
 - Reparatur eines als Text codierten `=` zu `<mo>=</mo>`, wenn auf beiden Seiten
   eindeutig mathematische Strukturelemente stehen
+- Umwandlung eindeutig mathematischer `<mtext>`-Kurzformen wie `L={` sowie
+  mathematischer Klammern und Trennzeichen in native MathML-Token
+- Schutz zusammengehöriger Textklammern, wenn ihr Inhalt erkennbare deutsche
+  Wörter enthält
 - Erhaltung bewusst gesetzter HTML-Umbrüche mit `<br>`
 - Absatzdarstellung mit `<p>` ausschließlich in der Vorschau; der Sanitized
   Code selbst bleibt frei von `<p>`-Elementen
@@ -30,6 +34,28 @@ MathML-sanitizer.html
 - kompakte Zusammenfassung der vorgenommenen Bereinigungen
 - Kopieren des gereinigten und lesbar formatierten Codes
 - Export einer eigenständigen HTML-Testseite mit eingebettetem MathJax
+
+## Versionierung
+
+Die Anwendung verwendet semantische Versionsnummern nach dem Muster
+`MAJOR.MINOR.PATCH`:
+
+- **MAJOR** kennzeichnet inkompatible Änderungen an Bereinigungsregeln oder Ausgabe.
+- **MINOR** kennzeichnet rückwärtskompatible neue Funktionen.
+- **PATCH** kennzeichnet Fehlerkorrekturen und kleinere Dokumentationsänderungen.
+
+Jede veröffentlichte Version erhält zusätzlich den Namen einer allgemein
+bekannten Nobelpreisträgerin oder eines Nobelpreisträgers. Der Name ist ein
+Codename und hat keinen Einfluss auf die technische Versionsreihenfolge.
+
+| Version | Codename | Bedeutung |
+| --- | --- | --- |
+| 1.0.0 | Albert Einstein | Erste offiziell versionierte Ausgabe des Sanitizers |
+
+Die aktuelle Release-Kennung erscheint oben links in der Anwendung. Technisch
+liegt sie zusätzlich in den HTML-Metadaten `application-version` und
+`application-codename`. JavaScript, Vorschaufenster und Export lesen diese
+zentrale Angabe, damit Versionsnummer und Codename konsistent bleiben.
 
 ## Lokaler Start
 
@@ -139,8 +165,9 @@ aktualisiert die Vorschau.
 
 ## Eigenständige Testseite exportieren
 
-Mit **Eigenständige HTML-Testseite herunterladen** wird eine einzelne Datei mit
-dem Namen `mathml-mobile-test-standalone.html` erzeugt. Sie enthält:
+Mit **Eigenständige HTML-Testseite herunterladen** wird eine einzelne Datei
+nach dem Muster `mathml-mobile-test-vVERSION-standalone.html` erzeugt, aktuell
+also `mathml-mobile-test-v1.0.0-standalone.html`. Sie enthält:
 
 - den aktuell bereinigten Inhalt,
 - die nur für die Darstellung ergänzten Absatz-Wrapper,
@@ -193,6 +220,16 @@ Ein reiner `<mtext>`-Abstand zwischen zwei Formelgliedern wird beim
 Zusammenführen als `<mspace width="0.25em">` erhalten. Direkt neben einem
 `<mo>`-Operator wird kein zusätzliches `<mspace>` erzeugt, da der mathematische
 Operator seine typografischen Abstände selbst bestimmt.
+
+Eindeutig mathematische Kurztexte auf der obersten MathML-Flussebene werden
+tokenisiert. Aus `<mtext>L = {</mtext>` entstehen beispielsweise `<mi>L</mi>`,
+`<mo>=</mo>` und `<mo>{</mo>`. Einzelne textcodierte Klammern oder Trennzeichen
+wie `;` werden nur bei vorhandenem Formelumfeld übernommen. Umschließt ein
+Klammerpaar dagegen erkennbaren deutschen Text, bleiben sowohl die öffnende als
+auch die zugehörige schließende Klammer Text. Mehrbuchstabige Ausdrücke gelten
+dabei vorsichtshalber als Prosa; ausgenommen sind geläufige mathematische
+Funktionsnamen und kurze Bezeichner aus Großbuchstaben. Im Zweifelsfall findet
+keine Umwandlung statt.
 
 In einem endgültigen Formelsegment entfernt der Sanitizer außerdem führenden
 und nachgestellten Leerraum aus einfachen `<mtext>`-Token. Aus
